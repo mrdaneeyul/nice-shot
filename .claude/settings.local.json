@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(msbuild:*)",
+      "Bash(\"/mnt/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" NiceShot.vcxproj /p:Configuration=Release /p:Platform=x64)"
+    ],
+    "deny": []
+  }
+}
