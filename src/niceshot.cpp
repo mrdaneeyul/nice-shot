@@ -1,5 +1,7 @@
 #include "niceshot.h"
 #include <iostream>
+#include <png.h>
+#include <zlib.h>
 
 // DLL entry point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
@@ -23,6 +25,16 @@ static bool g_initialized = false;
 
 // GameMaker interface implementation
 extern "C" {
+
+__declspec(dllexport) double niceshot_test_libpng() {
+    // Test libpng version
+    const char* version = png_get_libpng_ver(NULL);
+    if (version) {
+        printf("[NiceShot] libpng version: %s\n", version);
+        return 1.0; // Success
+    }
+    return 0.0; // Failure
+}
 
 double niceshot_init() {
     if (g_initialized) {

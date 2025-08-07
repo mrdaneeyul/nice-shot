@@ -1,3 +1,2 @@
 ﻿  niceshot.cpp
-     Creating library C:\Users\Daniel\source\repos\nice-shot\bin\Debug\NiceShot.lib and object C:\Users\Daniel\source\repos\nice-shot\bin\Debug\NiceShot.exp
-  NiceShot.vcxproj -> C:\Users\Daniel\source\repos\nice-shot\bin\Debug\NiceShot.dll
+LINK : fatal error LNK1104: cannot open file 'libpng16.lib'
