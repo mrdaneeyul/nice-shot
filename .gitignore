@@ -39,3 +39,41 @@
 
 # debug information files
 *.dwo
+
+# Visual Studio 2022 specific files
+.vs/
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.vcxproj.filters
+*.vcxproj.user
+
+# Build output directories
+bin/
+obj/
+Debug/
+Release/
+x64/
+x86/
+
+# Visual Studio cache/options directories
+.vscode/
+*.tmp
+*.temp
+
+# Windows specific files
+Thumbs.db
+Desktop.ini
+
+# Dependencies (will be added later)
+libs/
+third_party/
+
+# Log files
+*.log
+
+# Backup files
+*.bak
+*~
