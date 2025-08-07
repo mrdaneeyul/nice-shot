@@ -58,26 +58,31 @@ msbuild NiceShot.vcxproj /p:Configuration=Release /p:Platform=x64 /t:Clean,Build
 - Basic DLL structure and GameMaker communication
 - Extension loads successfully in GameMaker
 - Test functions work correctly (verified with ProtoDungeon3 integration)
+- ✅ libpng/zlib dependencies resolved via vcpkg
+- ✅ Real PNG encoding implementation with libpng
+- PNG saving function accepts buffer pointer, width, height, and filepath
+- Comprehensive error handling for PNG operations
 
 **Missing**:
-- libpng/zlib libraries causing build error LNK1104
-- Actual PNG encoding implementation (currently stubbed)
 - Threading system for async operations
 - Job management for tracking save operations
+- GameMaker integration testing of PNG functionality
 
 ## Dependencies
 
-### Required Libraries (Currently Missing)
-- **libpng16.lib** - PNG encoding/decoding library
-- **zlib.lib** - Compression library required by libpng
+### ✅ Resolved Libraries
+- **libpng:x64-windows** - PNG encoding/decoding library (via vcpkg)
+- **zlib:x64-windows** - Compression library required by libpng (via vcpkg)
+- **vcpkg integration** - Automatic library linking and DLL deployment
 
-### Build Error Resolution
-The current build error `LNK1104 cannot open file 'libpng16.lib'` indicates missing library dependencies. To resolve:
-
-1. Download libpng Windows binaries
-2. Download zlib Windows binaries  
-3. Update vcxproj with correct library paths
-4. Ensure libraries are available at build time
+### vcpkg Configuration
+The project uses vcpkg for dependency management:
+```bash
+vcpkg install libpng:x64-windows zlib:x64-windows
+vcpkg integrate install
+```
+- Libraries automatically linked (no manual .lib references needed)
+- DLLs automatically copied to output directory (libpng16.dll, zlib1.dll)
 
 ## Development Workflow
 
@@ -101,7 +106,8 @@ The current build error `LNK1104 cannot open file 'libpng16.lib'` indicates miss
 - `niceshot_shutdown()` - Cleanup extension
 - `niceshot_test(input)` - Connection test (returns input + 1)
 - `niceshot_get_version()` - Version string
-- `niceshot_save_png(buffer_ptr, width, height, filepath)` - PNG save (stubbed)
+- ✅ `niceshot_save_png(buffer_ptr, width, height, filepath)` - PNG save (implemented with libpng)
+- ✅ `niceshot_test_png()` - Creates test 100x100 gradient PNG for verification
 
 ### Planned Async Functions
 - `async_png_save_buffer()` - Start async PNG save, returns job_id

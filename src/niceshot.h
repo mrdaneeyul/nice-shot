@@ -24,6 +24,10 @@ extern "C" {
     // Get version string (returns pointer to static string)
     NICESHOT_API const char* niceshot_get_version();
     
+    // Test function - creates and saves a simple test PNG
+    // Returns: 1.0 on success, 0.0 on failure
+    NICESHOT_API double niceshot_test_png();
+    
     // Basic PNG save function (synchronous for now)
     // Parameters: buffer_ptr (GameMaker buffer address), width, height, filepath
     // Returns: 1.0 on success, 0.0 on failure
