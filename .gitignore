@@ -40,7 +40,7 @@
 # debug information files
 *.dwo
 
-# Visual Studio 2022 specific files
+# Visual Studio files and directories
 .vs/
 *.user
 *.suo
@@ -49,6 +49,15 @@
 *.opensdf
 *.vcxproj.filters
 *.vcxproj.user
+*.aps
+*.idb
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+*.cache
+*.ipch
+*.VC.db
+*.VC.VC.opendb
 
 # Build output directories
 bin/
@@ -73,6 +82,12 @@ third_party/
 
 # Log files
 *.log
+*.applocal.log
+
+# MSBuild specific
+*.recipe
+*.iobj
+*.exp
 
 # Backup files
 *.bak
