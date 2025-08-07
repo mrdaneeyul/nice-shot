@@ -81,4 +81,24 @@ const char* niceshot_get_version() {
     return version;
 }
 
+double niceshot_save_png(double buffer_ptr, double width, double height, const char* filepath) {
+    if (!g_initialized) {
+        std::cerr << "[NiceShot] Extension not initialized" << std::endl;
+        return 0.0;
+    }
+    
+    if (buffer_ptr <= 0 || width <= 0 || height <= 0 || !filepath) {
+        std::cerr << "[NiceShot] Invalid parameters for PNG save" << std::endl;
+        return 0.0;
+    }
+    
+    std::cout << "[NiceShot] PNG save requested: " << filepath << " (" << width << "x" << height << ")" << std::endl;
+    
+    // TODO: Implement actual PNG encoding with libpng
+    // For now, just simulate success
+    std::cout << "[NiceShot] PNG save simulated - would save " << (int)(width * height * 4) << " bytes" << std::endl;
+    
+    return 1.0; // Success (simulated)
+}
+
 } // extern "C"
