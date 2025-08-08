@@ -57,4 +57,29 @@ extern "C" {
     // Check if worker thread is running
     // Returns: 1.0 if running, 0.0 if stopped
     NICESHOT_API double niceshot_worker_thread_status();
+    
+    // Performance tuning functions
+    
+    // Set PNG compression level (0=fastest, 9=smallest, 6=default)
+    // Parameters: compression_level (0-9)
+    // Returns: 1.0 on success, 0.0 on failure
+    NICESHOT_API double niceshot_set_compression_level(double compression_level);
+    
+    // Get current compression level
+    // Returns: current compression level (0-9), -1.0 if not initialized
+    NICESHOT_API double niceshot_get_compression_level();
+    
+    // Set number of worker threads (1-8, defaults to CPU cores)
+    // Parameters: thread_count (1-8)
+    // Returns: 1.0 on success, 0.0 on failure
+    NICESHOT_API double niceshot_set_thread_count(double thread_count);
+    
+    // Get current thread count
+    // Returns: current thread count, -1.0 if not initialized
+    NICESHOT_API double niceshot_get_thread_count();
+    
+    // Benchmark function - test PNG encoding performance
+    // Parameters: width, height, iteration_count
+    // Returns: average encode time in milliseconds, -1.0 on error
+    NICESHOT_API double niceshot_benchmark_png(double width, double height, double iterations);
 }

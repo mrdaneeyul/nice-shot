@@ -39,6 +39,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Global state
 static bool g_initialized = false;
 
+// Performance configuration
+static std::atomic<int> g_compression_level{6}; // Default PNG compression level
+static std::atomic<size_t> g_thread_count{0}; // 0 = auto-detect based on CPU cores
+
 // Async PNG Job System
 enum class JobStatus {
     QUEUED = 0,
@@ -72,7 +76,7 @@ static std::queue<std::shared_ptr<PngJob>> g_job_queue;
 static std::unordered_map<uint32_t, std::shared_ptr<PngJob>> g_active_jobs;
 static std::mutex g_job_mutex;
 static std::condition_variable g_job_condition;
-static std::thread g_worker_thread;
+static std::vector<std::thread> g_worker_threads;
 static std::atomic<bool> g_worker_thread_running{false};
 static std::atomic<bool> g_shutdown_requested{false};
 
@@ -184,7 +188,7 @@ static bool encode_png_to_file(const uint8_t* pixels, uint32_t width, uint32_t h
                  8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
     
-    png_set_compression_level(png_ptr, 6);
+    png_set_compression_level(png_ptr, g_compression_level.load());
     png_write_info(png_ptr, info_ptr);
     
     // Write image data row by row
@@ -223,13 +227,29 @@ double niceshot_init() {
     try {
         std::cout << "[NiceShot] Initializing extension..." << std::endl;
         
-        // Reset shutdown flag and start worker thread
+        // Determine optimal thread count if not set
+        size_t thread_count = g_thread_count.load();
+        if (thread_count == 0) {
+            thread_count = std::min(static_cast<size_t>(8), 
+                                  std::max(static_cast<size_t>(1), 
+                                         std::thread::hardware_concurrency()));
+            g_thread_count = thread_count;
+        }
+        
+        // Reset shutdown flag and start worker threads
         g_shutdown_requested = false;
         g_worker_thread_running = true;
-        g_worker_thread = std::thread(worker_thread_main);
+        
+        g_worker_threads.clear();
+        g_worker_threads.reserve(thread_count);
+        
+        for (size_t i = 0; i < thread_count; ++i) {
+            g_worker_threads.emplace_back(worker_thread_main);
+        }
         
         g_initialized = true;
-        std::cout << "[NiceShot] Extension initialized successfully with worker thread" << std::endl;
+        std::cout << "[NiceShot] Extension initialized successfully with " << thread_count << " worker threads" << std::endl;
+        std::cout << "[NiceShot] PNG compression level: " << g_compression_level.load() << std::endl;
         return 1.0; // Success
     }
     catch (const std::exception& e) {
@@ -248,14 +268,17 @@ double niceshot_shutdown() {
     try {
         std::cout << "[NiceShot] Shutting down extension..." << std::endl;
         
-        // Signal worker thread to shutdown
+        // Signal worker threads to shutdown
         g_shutdown_requested = true;
-        g_job_condition.notify_all(); // Wake up worker thread
+        g_job_condition.notify_all(); // Wake up all worker threads
         
-        // Wait for worker thread to finish
-        if (g_worker_thread.joinable()) {
-            g_worker_thread.join();
+        // Wait for all worker threads to finish
+        for (auto& thread : g_worker_threads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
         }
+        g_worker_threads.clear();
         g_worker_thread_running = false;
         
         // Clear any remaining jobs
@@ -368,7 +391,7 @@ double niceshot_test_png() {
                  8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
     
-    png_set_compression_level(png_ptr, 6);
+    png_set_compression_level(png_ptr, g_compression_level.load());
     png_write_info(png_ptr, info_ptr);
     
     // Write image data row by row
@@ -661,6 +684,50 @@ double niceshot_get_pending_job_count() {
 
 double niceshot_worker_thread_status() {
     return g_worker_thread_running.load() ? 1.0 : 0.0;
+}
+
+// Performance tuning functions
+double niceshot_set_compression_level(double compression_level) {
+    int level = static_cast<int>(compression_level);
+    if (level < 0 || level > 9) {
+        std::cerr << "[NiceShot] Invalid compression level: " << level << " (must be 0-9)" << std::endl;
+        return 0.0;
+    }
+    
+    g_compression_level = level;
+    std::cout << "[NiceShot] PNG compression level set to: " << level << std::endl;
+    return 1.0;
+}
+
+double niceshot_get_compression_level() {
+    if (!g_initialized) {
+        return -1.0;
+    }
+    return static_cast<double>(g_compression_level.load());
+}
+
+double niceshot_set_thread_count(double thread_count) {
+    if (g_initialized) {
+        std::cerr << "[NiceShot] Cannot change thread count while extension is initialized" << std::endl;
+        return 0.0;
+    }
+    
+    size_t count = static_cast<size_t>(thread_count);
+    if (count < 1 || count > 8) {
+        std::cerr << "[NiceShot] Invalid thread count: " << count << " (must be 1-8)" << std::endl;
+        return 0.0;
+    }
+    
+    g_thread_count = count;
+    std::cout << "[NiceShot] Worker thread count set to: " << count << std::endl;
+    return 1.0;
+}
+
+double niceshot_get_thread_count() {
+    if (!g_initialized) {
+        return -1.0;
+    }
+    return static_cast<double>(g_thread_count.load());
 }
 
 } // extern "C"
