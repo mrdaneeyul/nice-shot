@@ -730,4 +730,103 @@ double niceshot_get_thread_count() {
     return static_cast<double>(g_thread_count.load());
 }
 
+double niceshot_benchmark_png(double width, double height, double iterations) {
+    if (!g_initialized) {
+        std::cerr << "[NiceShot] Extension not initialized for benchmark" << std::endl;
+        return -1.0;
+    }
+    
+    uint32_t img_width = static_cast<uint32_t>(width);
+    uint32_t img_height = static_cast<uint32_t>(height);
+    uint32_t iter_count = static_cast<uint32_t>(iterations);
+    
+    if (img_width == 0 || img_height == 0 || iter_count == 0) {
+        std::cerr << "[NiceShot] Invalid benchmark parameters" << std::endl;
+        return -1.0;
+    }
+    
+    std::cout << "[NiceShot] Starting PNG benchmark: " << img_width << "x" << img_height 
+              << " x" << iter_count << " iterations" << std::endl;
+    std::cout << "[NiceShot] Compression level: " << g_compression_level.load() << std::endl;
+    std::cout << "[NiceShot] Worker threads: " << g_thread_count.load() << std::endl;
+    
+    // Create test image data
+    std::vector<uint8_t> test_pixels(img_width * img_height * 4);
+    
+    // Create a pattern for testing (gradient + noise for realistic compression)
+    for (uint32_t y = 0; y < img_height; ++y) {
+        for (uint32_t x = 0; x < img_width; ++x) {
+            uint32_t index = (y * img_width + x) * 4;
+            test_pixels[index + 0] = static_cast<uint8_t>((x * 255) / img_width); // Red gradient
+            test_pixels[index + 1] = static_cast<uint8_t>((y * 255) / img_height); // Green gradient
+            test_pixels[index + 2] = static_cast<uint8_t>((x + y) % 256); // Blue pattern
+            test_pixels[index + 3] = 255; // Alpha opaque
+        }
+    }
+    
+    // Run benchmark iterations
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    std::vector<uint32_t> job_ids;
+    for (uint32_t i = 0; i < iter_count; ++i) {
+        std::string filepath = "benchmark_" + std::to_string(i) + ".png";
+        
+        // Create job manually to avoid string conversion overhead
+        uint32_t job_id = g_next_job_id.fetch_add(1);
+        
+        try {
+            auto job = std::make_shared<PngJob>(job_id, test_pixels.data(), img_width, img_height, filepath);
+            
+            {
+                std::lock_guard<std::mutex> lock(g_job_mutex);
+                g_job_queue.push(job);
+                g_active_jobs[job_id] = job;
+            }
+            
+            job_ids.push_back(job_id);
+            g_job_condition.notify_one();
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[NiceShot] Benchmark failed to create job " << i << ": " << e.what() << std::endl;
+            return -1.0;
+        }
+    }
+    
+    // Wait for all jobs to complete
+    bool all_complete = false;
+    while (!all_complete) {
+        all_complete = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        
+        std::lock_guard<std::mutex> lock(g_job_mutex);
+        for (uint32_t job_id : job_ids) {
+            auto it = g_active_jobs.find(job_id);
+            if (it != g_active_jobs.end() && 
+                it->second->status != JobStatus::COMPLETED && 
+                it->second->status != JobStatus::FAILED) {
+                all_complete = false;
+                break;
+            }
+        }
+    }
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto total_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+    double avg_time = total_time / iter_count;
+    
+    // Clean up benchmark jobs
+    {
+        std::lock_guard<std::mutex> lock(g_job_mutex);
+        for (uint32_t job_id : job_ids) {
+            g_active_jobs.erase(job_id);
+        }
+    }
+    
+    std::cout << "[NiceShot] Benchmark completed in " << total_time << "ms" << std::endl;
+    std::cout << "[NiceShot] Average time per PNG: " << avg_time << "ms" << std::endl;
+    std::cout << "[NiceShot] Throughput: " << (1000.0 / avg_time) << " PNG/sec" << std::endl;
+    
+    return avg_time;
+}
+
 } // extern "C"
