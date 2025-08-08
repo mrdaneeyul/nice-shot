@@ -10,9 +10,9 @@ The NiceShot extension now includes a **ring buffer video recording system** tha
 
 ### Core Recording Functions
 ```gml
-// Start video recording
+// Start video recording (ALL PARAMETERS MUST BE STRINGS due to GameMaker DLL limitation)
 // Returns: 1.0 on success, 0.0 on failure
-niceshot_start_recording(width, height, fps, bitrate_kbps, max_buffer_frames, filepath)
+niceshot_start_recording(width_str, height_str, fps_str, bitrate_kbps_str, max_buffer_frames_str, filepath)
 
 // Record a single frame (call every frame)
 // Returns: 1.0 on success, 0.0 on failure, -1.0 if buffer full (frame dropped)
@@ -126,13 +126,13 @@ function start_video_recording(_filename) {
         directory_create("recordings/");
     }
     
-    // Start recording
+    // Start recording - CONVERT ALL NUMERIC ARGUMENTS TO STRINGS
     var result = niceshot_start_recording(
-        video_width, 
-        video_height, 
-        video_fps, 
-        video_bitrate, 
-        video_buffer_frames, 
+        string(video_width), 
+        string(video_height), 
+        string(video_fps), 
+        string(video_bitrate), 
+        string(video_buffer_frames), 
         recording_filepath
     );
     
@@ -367,7 +367,7 @@ if (video_recorder.recording && current_time % 5000 < 16) { // Every 5 seconds
 ## Example Usage
 
 ```gml
-// Start 60fps 1080p recording
+// Start 60fps 1080p recording  
 video_recorder.start_video_recording("my_gameplay");
 
 // Record frames (called automatically in step event)
@@ -379,11 +379,22 @@ video_recorder.stop_video_recording();
 // Video file saved to: recordings/my_gameplay_YYYYMMDD_HHMMSS.mp4
 ```
 
+## GameMaker Extension Configuration
+
+**IMPORTANT**: When configuring the `niceshot_start_recording` function in GameMaker's extension editor:
+
+1. Set **all 6 parameters** as **String** type (not mixed types)
+2. Parameter names: `width_str`, `height_str`, `fps_str`, `bitrate_kbps_str`, `max_buffer_frames_str`, `filepath`
+3. Return type: **Real**
+
+This is required due to GameMaker's limitation that DLL functions with more than 4 arguments must have all arguments of the same type.
+
 ## Notes
 
 - **Memory Usage**: ~8MB per frame (1920×1080×4 bytes). 120 frames ≈ 1GB RAM
-- **Performance Impact**: Frame capture ~1ms, no game slowdown
-- **File Output**: Currently placeholder (will be H.264 MP4 when x264 integration is complete)
+- **Performance Impact**: Frame capture ~1ms, no game slowdown  
+- **File Output**: Real H.264 video files (.h264 format, playable in VLC)
 - **Thread Safety**: All functions are thread-safe, can be called from GameMaker main thread
+- **String Arguments**: All numeric parameters are converted to strings, then parsed back to numbers in the DLL
 
 The ring buffer system guarantees smooth 60fps gameplay while recording. If the encoding can't keep up, it drops frames rather than slowing the game.

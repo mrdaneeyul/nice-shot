@@ -974,6 +974,7 @@ double niceshot_benchmark_png(double width, double height, double iterations) {
 // Video Recording Functions
 
 double niceshot_start_recording(double width, double height, double fps, double bitrate_kbps, double max_buffer_frames, const char* filepath) {
+double niceshot_start_recording(const char* width_str, const char* height_str, const char* fps_str, const char* bitrate_kbps_str, const char* max_buffer_frames_str, const char* filepath) {
     if (!g_initialized) {
         std::cerr << "[NiceShot] Extension not initialized" << std::endl;
         return 0.0;
@@ -981,8 +982,28 @@ double niceshot_start_recording(double width, double height, double fps, double 
     
     if (width <= 0 || height <= 0 || fps <= 0 || bitrate_kbps <= 0 || max_buffer_frames <= 0 || !filepath) {
         std::cerr << "[NiceShot] Invalid recording parameters" << std::endl;
+    if (!width_str || !height_str || !fps_str || !bitrate_kbps_str || !max_buffer_frames_str || !filepath) {
+        std::cerr << "[NiceShot] Invalid recording parameters (null strings)" << std::endl;
         return 0.0;
     }
+    
+    // Parse string arguments to numeric values
+    double width = std::atof(width_str);
+    double height = std::atof(height_str);
+    double fps = std::atof(fps_str);
+    double bitrate_kbps = std::atof(bitrate_kbps_str);
+    double max_buffer_frames = std::atof(max_buffer_frames_str);
+    
+    if (width <= 0 || height <= 0 || fps <= 0 || bitrate_kbps <= 0 || max_buffer_frames <= 0) {
+        std::cerr << "[NiceShot] Invalid recording parameters after parsing: " 
+                  << "width=" << width << ", height=" << height << ", fps=" << fps 
+                  << ", bitrate=" << bitrate_kbps << ", buffer_frames=" << max_buffer_frames << std::endl;
+        return 0.0;
+    }
+    
+    std::cout << "[NiceShot] Parsed recording parameters: " << width << "x" << height 
+              << "@" << fps << "fps, " << bitrate_kbps << "kbps, " 
+              << max_buffer_frames << " buffer frames" << std::endl;
     
     std::lock_guard<std::mutex> lock(g_recording_mutex);
     
