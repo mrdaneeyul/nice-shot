@@ -54,19 +54,68 @@ msbuild NiceShot.vcxproj /p:Configuration=Release /p:Platform=x64 /t:Clean,Build
 
 ### Current Implementation Status
 
-**Working**:
+**✅ Working**:
 - Basic DLL structure and GameMaker communication
 - Extension loads successfully in GameMaker
 - Test functions work correctly (verified with ProtoDungeon3 integration)
-- ✅ libpng/zlib dependencies resolved via vcpkg
-- ✅ Real PNG encoding implementation with libpng
+- libpng/zlib dependencies resolved via vcpkg
+- Real PNG encoding implementation with libpng
 - PNG saving function accepts buffer pointer, width, height, and filepath
 - Comprehensive error handling for PNG operations
+- **GameMaker integration tested and confirmed working**:
+  - Surface screenshots (1280x720) working perfectly
+  - Composite screenshots (1600x900) with effects working
+  - Buffer parsing and memory validation implemented
+  - 2/3 tests passing (test function fixed with direct PNG encoding)
 
-**Missing**:
+**🚧 Next Phase**:
 - Threading system for async operations
 - Job management for tracking save operations
-- GameMaker integration testing of PNG functionality
+
+## Async Threading System - Implementation Plan
+
+### Architecture Overview
+```
+GameMaker Thread          Worker Thread
+     │                         │
+     ├─ niceshot_save_png_async(buffer, width, height, filepath)
+     │  ├─ Copy buffer data    │
+     │  ├─ Create job          │
+     │  ├─ Queue job ────────► │ ├─ Process job queue
+     │  └─ Return job_id       │ ├─ Encode PNG
+     │                         │ ├─ Save to file
+     │                         │ └─ Mark job complete
+     ├─ niceshot_get_job_status(job_id)
+     └─ niceshot_cleanup_job(job_id)
+```
+
+### Implementation Steps
+1. **Job Queue System**
+   - Thread-safe job queue using std::queue + std::mutex
+   - Job structure: id, buffer_data, width, height, filepath, status
+   - Job status tracking: QUEUED, PROCESSING, COMPLETED, FAILED
+
+2. **Worker Thread**
+   - Background std::thread processing job queue
+   - PNG encoding using existing libpng implementation
+   - Safe memory management with copied buffer data
+
+3. **Job Management**
+   - Unique job ID generation
+   - Status checking functions for GameMaker
+   - Job cleanup and memory management
+
+4. **Thread Safety**
+   - Mutex protection for shared data structures
+   - Condition variables for efficient thread communication
+   - RAII for automatic resource cleanup
+
+### New Functions to Implement
+- `niceshot_save_png_async(buffer_ptr_str, width, height, filepath)` → returns job_id
+- `niceshot_get_job_status(job_id)` → returns status (0=queued, 1=processing, 2=complete, -1=failed)
+- `niceshot_cleanup_job(job_id)` → cleanup completed job
+- `niceshot_get_pending_job_count()` → number of jobs in queue
+- `niceshot_worker_thread_status()` → worker thread health check
 
 ## Dependencies
 
