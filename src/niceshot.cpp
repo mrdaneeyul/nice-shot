@@ -104,11 +104,16 @@ const char* niceshot_get_version() {
 double niceshot_test_png() {
     std::cout << "[NiceShot] Creating test PNG..." << std::endl;
     
+    if (!g_initialized) {
+        std::cerr << "[NiceShot] Extension not initialized" << std::endl;
+        return 0.0;
+    }
+    
     // Create a simple 100x100 test image with RGBA pattern
     const uint32_t test_width = 100;
     const uint32_t test_height = 100;
     
-    // Use std::vector to ensure proper memory allocation
+    // Create test image data directly without going through string conversion
     std::vector<uint8_t> test_pixels(test_width * test_height * 4);
     
     // Create a simple gradient pattern
@@ -122,15 +127,70 @@ double niceshot_test_png() {
         }
     }
     
-    // Use our PNG save function to test it
-    uintptr_t buffer_addr = reinterpret_cast<uintptr_t>(test_pixels.data());
-    std::ostringstream oss;
-    oss << buffer_addr;
-    double result = niceshot_save_png(oss.str().c_str(), test_width, test_height, "test_output.png");
+    // Save PNG directly without using the string-based interface
+    // Open file for writing
+    FILE* fp = nullptr;
+#ifdef _WIN32
+    fopen_s(&fp, "test_output.png", "wb");
+#else
+    fp = fopen("test_output.png", "wb");
+#endif
     
-    // std::vector automatically cleans up when it goes out of scope
+    if (!fp) {
+        std::cerr << "[NiceShot] Failed to open test file for writing" << std::endl;
+        return 0.0;
+    }
     
-    return result;
+    // Initialize PNG structures
+    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (!png_ptr) {
+        std::cerr << "[NiceShot] Failed to create PNG write structure for test" << std::endl;
+        fclose(fp);
+        return 0.0;
+    }
+    
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr) {
+        std::cerr << "[NiceShot] Failed to create PNG info structure for test" << std::endl;
+        png_destroy_write_struct(&png_ptr, nullptr);
+        fclose(fp);
+        return 0.0;
+    }
+    
+    // Error handling with setjmp/longjmp
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        std::cerr << "[NiceShot] PNG encoding error occurred in test" << std::endl;
+        png_destroy_write_struct(&png_ptr, &info_ptr);
+        fclose(fp);
+        return 0.0;
+    }
+    
+    // Set up PNG file writing
+    png_init_io(png_ptr, fp);
+    
+    // Set PNG header information
+    png_set_IHDR(png_ptr, info_ptr, 
+                 test_width, test_height,
+                 8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    
+    png_set_compression_level(png_ptr, 6);
+    png_write_info(png_ptr, info_ptr);
+    
+    // Write image data row by row
+    uint32_t stride = test_width * 4;
+    for (uint32_t y = 0; y < test_height; ++y) {
+        png_bytep row = test_pixels.data() + (y * stride);
+        png_write_row(png_ptr, row);
+    }
+    
+    png_write_end(png_ptr, nullptr);
+    png_destroy_write_struct(&png_ptr, &info_ptr);
+    fclose(fp);
+    
+    std::cout << "[NiceShot] Test PNG saved successfully: test_output.png (" << test_width << "x" << test_height << ")" << std::endl;
+    
+    return 1.0; // Success
 }
 
 double niceshot_save_png(const char* buffer_ptr_str, double width, double height, const char* filepath) {
