@@ -82,4 +82,37 @@ extern "C" {
     // Parameters: width, height, iteration_count
     // Returns: average encode time in milliseconds, -1.0 on error
     NICESHOT_API double niceshot_benchmark_png(double width, double height, double iterations);
+    
+    // Video Recording Functions
+    
+    // Start video recording with specified settings
+    // Parameters: width, height, fps, bitrate_kbps, max_buffer_frames, filepath
+    // Returns: 1.0 on success, 0.0 on failure
+    NICESHOT_API double niceshot_start_recording(double width, double height, double fps, double bitrate_kbps, double max_buffer_frames, const char* filepath);
+    
+    // Record a single frame (call this every frame during recording)
+    // Parameters: buffer_ptr_str (GameMaker buffer address as string)
+    // Returns: 1.0 on success, 0.0 on failure, -1.0 if buffer full (frame dropped)
+    NICESHOT_API double niceshot_record_frame(const char* buffer_ptr_str);
+    
+    // Stop video recording and finalize file
+    // Returns: 1.0 on success, 0.0 on failure
+    NICESHOT_API double niceshot_stop_recording();
+    
+    // Get recording statistics
+    // Returns: buffer_usage_percent (0-100), -1.0 if not recording
+    NICESHOT_API double niceshot_get_recording_buffer_usage();
+    
+    // Get number of frames recorded
+    // Returns: frame count, -1.0 if not recording
+    NICESHOT_API double niceshot_get_recording_frame_count();
+    
+    // Get recording status
+    // Returns: 0=not recording, 1=recording, 2=finalizing, -1=error
+    NICESHOT_API double niceshot_get_recording_status();
+    
+    // Set video quality preset (call before start_recording)
+    // Parameters: preset (0=ultrafast, 1=fast, 2=medium, 3=slow, 4=slower)
+    // Returns: 1.0 on success, 0.0 on failure
+    NICESHOT_API double niceshot_set_video_preset(double preset);
 }

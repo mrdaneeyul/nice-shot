@@ -15,6 +15,8 @@
 #include <memory>
 #include <unordered_map>
 #include <string>
+#include <deque>
+#include <chrono>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -43,6 +45,9 @@ static bool g_initialized = false;
 static std::atomic<int> g_compression_level{6}; // Default PNG compression level
 static std::atomic<size_t> g_thread_count{0}; // 0 = auto-detect based on CPU cores
 
+// Video recording configuration
+static std::atomic<int> g_video_preset{1}; // 0=ultrafast, 1=fast, 2=medium, 3=slow, 4=slower
+
 // Async PNG Job System
 enum class JobStatus {
     QUEUED = 0,
@@ -70,6 +75,82 @@ struct PngJob {
     }
 };
 
+// Video Recording System
+enum class RecordingStatus {
+    NOT_RECORDING = 0,
+    RECORDING = 1,
+    FINALIZING = 2,
+    ERROR_STATE = -1
+};
+
+struct VideoFrame {
+    std::vector<uint8_t> pixel_data;
+    uint32_t width;
+    uint32_t height;
+    std::chrono::high_resolution_clock::time_point timestamp;
+    uint64_t frame_number;
+    
+    VideoFrame(const uint8_t* pixels, uint32_t w, uint32_t h, uint64_t frame_num)
+        : width(w), height(h), frame_number(frame_num), timestamp(std::chrono::high_resolution_clock::now())
+    {
+        size_t buffer_size = static_cast<size_t>(width) * height * 4; // RGBA
+        pixel_data.resize(buffer_size);
+        std::memcpy(pixel_data.data(), pixels, buffer_size);
+    }
+    
+    size_t get_memory_size() const {
+        return pixel_data.size() + sizeof(VideoFrame);
+    }
+};
+
+struct VideoRecordingSession {
+    // Recording parameters
+    uint32_t width;
+    uint32_t height;
+    double fps;
+    double bitrate_kbps;
+    std::string output_filepath;
+    size_t max_buffer_frames;
+    
+    // Ring buffer for frames
+    std::deque<std::unique_ptr<VideoFrame>> frame_buffer;
+    std::mutex buffer_mutex;
+    std::condition_variable buffer_condition;
+    
+    // Recording state
+    RecordingStatus status;
+    uint64_t frames_captured;
+    uint64_t frames_encoded;
+    uint64_t frames_dropped;
+    std::chrono::high_resolution_clock::time_point recording_start_time;
+    
+    // Memory management
+    std::atomic<size_t> current_buffer_memory;
+    size_t max_buffer_memory;
+    
+    // Worker threads
+    std::thread encoding_thread;
+    std::atomic<bool> stop_encoding;
+    
+    VideoRecordingSession(uint32_t w, uint32_t h, double f, double bitrate, size_t max_frames, const std::string& filepath)
+        : width(w), height(h), fps(f), bitrate_kbps(bitrate), output_filepath(filepath), max_buffer_frames(max_frames),
+          status(RecordingStatus::NOT_RECORDING), frames_captured(0), frames_encoded(0), frames_dropped(0),
+          current_buffer_memory(0), stop_encoding(false)
+    {
+        // Calculate maximum memory usage: frame_size * max_frames + overhead
+        size_t frame_size = static_cast<size_t>(width) * height * 4 + sizeof(VideoFrame);
+        max_buffer_memory = frame_size * max_buffer_frames;
+        
+        std::cout << "[NiceShot] Video session created: " << width << "x" << height << "@" << fps << "fps" << std::endl;
+        std::cout << "[NiceShot] Max buffer frames: " << max_buffer_frames 
+                  << " (≈" << (max_buffer_memory / 1024 / 1024) << "MB)" << std::endl;
+    }
+};
+
+// Global video recording state
+static std::unique_ptr<VideoRecordingSession> g_recording_session = nullptr;
+static std::mutex g_recording_mutex;
+
 // Global async system state
 static std::atomic<uint32_t> g_next_job_id{1};
 static std::queue<std::shared_ptr<PngJob>> g_job_queue;
@@ -83,6 +164,7 @@ static std::atomic<bool> g_shutdown_requested{false};
 // Forward declarations for internal functions
 static bool encode_png_to_file(const uint8_t* pixels, uint32_t width, uint32_t height, const std::string& filepath, std::string& error_message);
 static void worker_thread_main();
+static void video_encoding_thread_main(VideoRecordingSession* session);
 
 // Worker thread main function
 static void worker_thread_main() {
@@ -138,6 +220,65 @@ static void worker_thread_main() {
     }
     
     std::cout << "[NiceShot] Worker thread exiting" << std::endl;
+}
+
+// Video encoding thread main function (placeholder without x264 for now)
+static void video_encoding_thread_main(VideoRecordingSession* session) {
+    if (!session) {
+        std::cerr << "[NiceShot] Video encoding thread started with null session" << std::endl;
+        return;
+    }
+    
+    std::cout << "[NiceShot] Video encoding thread started for " << session->output_filepath << std::endl;
+    
+    while (!session->stop_encoding.load()) {
+        std::unique_ptr<VideoFrame> frame = nullptr;
+        
+        // Get next frame from buffer
+        {
+            std::unique_lock<std::mutex> lock(session->buffer_mutex);
+            
+            // Wait for frame or stop signal
+            session->buffer_condition.wait(lock, [session] {
+                return !session->frame_buffer.empty() || session->stop_encoding.load();
+            });
+            
+            if (session->stop_encoding.load() && session->frame_buffer.empty()) {
+                break; // Exit thread
+            }
+            
+            if (!session->frame_buffer.empty()) {
+                frame = std::move(session->frame_buffer.front());
+                session->frame_buffer.pop_front();
+                
+                // Update memory tracking
+                session->current_buffer_memory.fetch_sub(frame->get_memory_size());
+            }
+        }
+        
+        // Process frame outside the lock
+        if (frame) {
+            // TODO: Replace this placeholder with actual H.264 encoding
+            // For now, just simulate encoding time and update counters
+            std::this_thread::sleep_for(std::chrono::milliseconds(5)); // Simulate encoding time
+            
+            session->frames_encoded++;
+            
+            // Progress logging every 60 frames
+            if (session->frames_encoded % 60 == 0) {
+                double elapsed = std::chrono::duration<double>(
+                    std::chrono::high_resolution_clock::now() - session->recording_start_time).count();
+                double fps_actual = session->frames_encoded / elapsed;
+                
+                std::cout << "[NiceShot] Encoded " << session->frames_encoded << " frames "
+                          << "(avg " << fps_actual << " fps, buffer: " 
+                          << session->frame_buffer.size() << " frames)" << std::endl;
+            }
+        }
+    }
+    
+    std::cout << "[NiceShot] Video encoding thread finished. Encoded " 
+              << session->frames_encoded << " frames" << std::endl;
 }
 
 // PNG encoding function extracted from niceshot_save_png
@@ -230,9 +371,10 @@ double niceshot_init() {
         // Determine optimal thread count if not set
         size_t thread_count = g_thread_count.load();
         if (thread_count == 0) {
-            thread_count = std::min(static_cast<size_t>(8), 
-                                  std::max(static_cast<size_t>(1), 
-                                         std::thread::hardware_concurrency()));
+            size_t hw_threads = std::thread::hardware_concurrency();
+            if (hw_threads == 0) hw_threads = 1; // Fallback if unable to detect
+            if (hw_threads > 8) hw_threads = 8; // Cap at 8 threads
+            thread_count = hw_threads;
             g_thread_count = thread_count;
         }
         
@@ -827,6 +969,198 @@ double niceshot_benchmark_png(double width, double height, double iterations) {
     std::cout << "[NiceShot] Throughput: " << (1000.0 / avg_time) << " PNG/sec" << std::endl;
     
     return avg_time;
+}
+
+// Video Recording Functions
+
+double niceshot_start_recording(double width, double height, double fps, double bitrate_kbps, double max_buffer_frames, const char* filepath) {
+    if (!g_initialized) {
+        std::cerr << "[NiceShot] Extension not initialized" << std::endl;
+        return 0.0;
+    }
+    
+    if (width <= 0 || height <= 0 || fps <= 0 || bitrate_kbps <= 0 || max_buffer_frames <= 0 || !filepath) {
+        std::cerr << "[NiceShot] Invalid recording parameters" << std::endl;
+        return 0.0;
+    }
+    
+    std::lock_guard<std::mutex> lock(g_recording_mutex);
+    
+    // Check if already recording
+    if (g_recording_session && g_recording_session->status == RecordingStatus::RECORDING) {
+        std::cerr << "[NiceShot] Already recording. Stop current recording first." << std::endl;
+        return 0.0;
+    }
+    
+    try {
+        // Create new recording session
+        uint32_t w = static_cast<uint32_t>(width);
+        uint32_t h = static_cast<uint32_t>(height);
+        size_t max_frames = static_cast<size_t>(max_buffer_frames);
+        
+        g_recording_session = std::make_unique<VideoRecordingSession>(w, h, fps, bitrate_kbps, max_frames, std::string(filepath));
+        
+        // Start encoding thread
+        g_recording_session->stop_encoding = false;
+        g_recording_session->status = RecordingStatus::RECORDING;
+        g_recording_session->recording_start_time = std::chrono::high_resolution_clock::now();
+        g_recording_session->encoding_thread = std::thread(video_encoding_thread_main, g_recording_session.get());
+        
+        std::cout << "[NiceShot] Video recording started: " << filepath << std::endl;
+        return 1.0;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "[NiceShot] Failed to start recording: " << e.what() << std::endl;
+        g_recording_session.reset();
+        return 0.0;
+    }
+}
+
+double niceshot_record_frame(const char* buffer_ptr_str) {
+    if (!buffer_ptr_str) {
+        return 0.0;
+    }
+    
+    std::lock_guard<std::mutex> lock(g_recording_mutex);
+    
+    if (!g_recording_session || g_recording_session->status != RecordingStatus::RECORDING) {
+        return 0.0; // Not recording
+    }
+    
+    // Parse buffer pointer from string
+    uintptr_t buffer_addr = 0;
+    if (sscanf(buffer_ptr_str, "%llx", &buffer_addr) != 1 || buffer_addr == 0) {
+        std::cerr << "[NiceShot] Invalid buffer pointer for video frame: " << buffer_ptr_str << std::endl;
+        return 0.0;
+    }
+    
+    uint8_t* pixels = reinterpret_cast<uint8_t*>(buffer_addr);
+    
+    // Check if buffer is full (memory-based limit)
+    size_t frame_size = static_cast<size_t>(g_recording_session->width) * g_recording_session->height * 4 + sizeof(VideoFrame);
+    if (g_recording_session->current_buffer_memory.load() + frame_size > g_recording_session->max_buffer_memory) {
+        // Buffer full - drop this frame
+        g_recording_session->frames_dropped++;
+        
+        if (g_recording_session->frames_dropped % 30 == 1) { // Log every 30 drops
+            std::cout << "[NiceShot] Warning: Dropping frames due to buffer full. Dropped " 
+                      << g_recording_session->frames_dropped << " frames so far." << std::endl;
+        }
+        
+        return -1.0; // Frame dropped
+    }
+    
+    try {
+        // Create frame
+        auto frame = std::make_unique<VideoFrame>(pixels, g_recording_session->width, 
+                                                 g_recording_session->height, g_recording_session->frames_captured);
+        
+        // Add to buffer
+        {
+            std::lock_guard<std::mutex> buffer_lock(g_recording_session->buffer_mutex);
+            g_recording_session->current_buffer_memory.fetch_add(frame->get_memory_size());
+            g_recording_session->frame_buffer.push_back(std::move(frame));
+        }
+        
+        // Notify encoding thread
+        g_recording_session->buffer_condition.notify_one();
+        
+        g_recording_session->frames_captured++;
+        return 1.0; // Success
+    }
+    catch (const std::exception& e) {
+        std::cerr << "[NiceShot] Failed to record frame: " << e.what() << std::endl;
+        return 0.0;
+    }
+}
+
+double niceshot_stop_recording() {
+    std::lock_guard<std::mutex> lock(g_recording_mutex);
+    
+    if (!g_recording_session || g_recording_session->status != RecordingStatus::RECORDING) {
+        return 0.0; // Not recording
+    }
+    
+    try {
+        std::cout << "[NiceShot] Stopping video recording..." << std::endl;
+        
+        g_recording_session->status = RecordingStatus::FINALIZING;
+        
+        // Signal encoding thread to stop
+        g_recording_session->stop_encoding = true;
+        g_recording_session->buffer_condition.notify_all();
+        
+        // Wait for encoding thread to finish
+        if (g_recording_session->encoding_thread.joinable()) {
+            g_recording_session->encoding_thread.join();
+        }
+        
+        // Log final statistics
+        double elapsed = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - g_recording_session->recording_start_time).count();
+        double avg_fps = g_recording_session->frames_captured / elapsed;
+        
+        std::cout << "[NiceShot] Recording finished:" << std::endl;
+        std::cout << "[NiceShot]   Duration: " << elapsed << " seconds" << std::endl;
+        std::cout << "[NiceShot]   Frames captured: " << g_recording_session->frames_captured << std::endl;
+        std::cout << "[NiceShot]   Frames encoded: " << g_recording_session->frames_encoded << std::endl;
+        std::cout << "[NiceShot]   Frames dropped: " << g_recording_session->frames_dropped << std::endl;
+        std::cout << "[NiceShot]   Average FPS: " << avg_fps << std::endl;
+        
+        g_recording_session.reset();
+        return 1.0;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "[NiceShot] Failed to stop recording: " << e.what() << std::endl;
+        g_recording_session.reset();
+        return 0.0;
+    }
+}
+
+double niceshot_get_recording_buffer_usage() {
+    std::lock_guard<std::mutex> lock(g_recording_mutex);
+    
+    if (!g_recording_session || g_recording_session->status != RecordingStatus::RECORDING) {
+        return -1.0;
+    }
+    
+    double usage_percent = (static_cast<double>(g_recording_session->current_buffer_memory.load()) / 
+                           g_recording_session->max_buffer_memory) * 100.0;
+    return usage_percent;
+}
+
+double niceshot_get_recording_frame_count() {
+    std::lock_guard<std::mutex> lock(g_recording_mutex);
+    
+    if (!g_recording_session) {
+        return -1.0;
+    }
+    
+    return static_cast<double>(g_recording_session->frames_captured);
+}
+
+double niceshot_get_recording_status() {
+    std::lock_guard<std::mutex> lock(g_recording_mutex);
+    
+    if (!g_recording_session) {
+        return static_cast<double>(RecordingStatus::NOT_RECORDING);
+    }
+    
+    return static_cast<double>(g_recording_session->status);
+}
+
+double niceshot_set_video_preset(double preset) {
+    int preset_int = static_cast<int>(preset);
+    if (preset_int < 0 || preset_int > 4) {
+        std::cerr << "[NiceShot] Invalid video preset: " << preset_int << " (must be 0-4)" << std::endl;
+        return 0.0;
+    }
+    
+    g_video_preset = preset_int;
+    
+    const char* preset_names[] = {"ultrafast", "fast", "medium", "slow", "slower"};
+    std::cout << "[NiceShot] Video preset set to: " << preset_names[preset_int] << std::endl;
+    return 1.0;
 }
 
 } // extern "C"
