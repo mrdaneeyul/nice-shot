@@ -29,7 +29,7 @@ extern "C" {
     NICESHOT_API double niceshot_test_png();
     
     // Basic PNG save function (synchronous for now)
-    // Parameters: buffer_ptr (GameMaker buffer address), width, height, filepath
+    // Parameters: buffer_ptr_str (GameMaker buffer address as string), width, height, filepath
     // Returns: 1.0 on success, 0.0 on failure
-    NICESHOT_API double niceshot_save_png(double buffer_ptr, double width, double height, const char* filepath);
+    NICESHOT_API double niceshot_save_png(const char* buffer_ptr_str, double width, double height, const char* filepath);
 }

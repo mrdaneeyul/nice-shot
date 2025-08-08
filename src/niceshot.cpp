@@ -3,8 +3,13 @@
 #include <vector>
 #include <cstdint>
 #include <csetjmp>
+#include <cstdio>
+#include <sstream>
 #include <png.h>
 #include <zlib.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 // DLL entry point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
@@ -102,6 +107,8 @@ double niceshot_test_png() {
     // Create a simple 100x100 test image with RGBA pattern
     const uint32_t test_width = 100;
     const uint32_t test_height = 100;
+    
+    // Use std::vector to ensure proper memory allocation
     std::vector<uint8_t> test_pixels(test_width * test_height * 4);
     
     // Create a simple gradient pattern
@@ -116,27 +123,91 @@ double niceshot_test_png() {
     }
     
     // Use our PNG save function to test it
-    double buffer_addr = static_cast<double>(reinterpret_cast<uintptr_t>(test_pixels.data()));
-    return niceshot_save_png(buffer_addr, test_width, test_height, "test_output.png");
+    uintptr_t buffer_addr = reinterpret_cast<uintptr_t>(test_pixels.data());
+    std::ostringstream oss;
+    oss << buffer_addr;
+    double result = niceshot_save_png(oss.str().c_str(), test_width, test_height, "test_output.png");
+    
+    // std::vector automatically cleans up when it goes out of scope
+    
+    return result;
 }
 
-double niceshot_save_png(double buffer_ptr, double width, double height, const char* filepath) {
+double niceshot_save_png(const char* buffer_ptr_str, double width, double height, const char* filepath) {
     if (!g_initialized) {
         std::cerr << "[NiceShot] Extension not initialized" << std::endl;
         return 0.0;
     }
     
-    if (buffer_ptr <= 0 || width <= 0 || height <= 0 || !filepath) {
+    if (!buffer_ptr_str || width <= 0 || height <= 0 || !filepath) {
         std::cerr << "[NiceShot] Invalid parameters for PNG save" << std::endl;
         return 0.0;
     }
     
     std::cout << "[NiceShot] PNG save requested: " << filepath << " (" << width << "x" << height << ")" << std::endl;
+    std::cout << "[NiceShot] Buffer pointer string: " << buffer_ptr_str << std::endl;
+    
+    // Parse buffer pointer from string (GameMaker sends it as hex with leading zeros)
+    uintptr_t buffer_addr = 0;
+    if (sscanf(buffer_ptr_str, "%llx", &buffer_addr) != 1 || buffer_addr == 0) {
+        std::cerr << "[NiceShot] Invalid buffer pointer string: " << buffer_ptr_str << std::endl;
+        return 0.0;
+    }
+    
+    std::cout << "[NiceShot] Parsed buffer address: 0x" << std::hex << buffer_addr << std::dec << std::endl;
+    
+    // Validate buffer address is reasonable (not null, not obviously corrupt)
+    if (buffer_addr < 0x1000 || buffer_addr > 0x7FFFFFFFFFFF) {
+        std::cerr << "[NiceShot] Buffer address appears invalid: 0x" << std::hex << buffer_addr << std::dec << std::endl;
+        return 0.0;
+    }
     
     // Cast buffer pointer to pixel data
-    uint8_t* pixels = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(buffer_ptr));
+    uint8_t* pixels = reinterpret_cast<uint8_t*>(buffer_addr);
     uint32_t img_width = static_cast<uint32_t>(width);
     uint32_t img_height = static_cast<uint32_t>(height);
+    
+    // Validate image dimensions are reasonable
+    if (img_width > 16384 || img_height > 16384) {
+        std::cerr << "[NiceShot] Image dimensions too large: " << img_width << "x" << img_height << std::endl;
+        return 0.0;
+    }
+    
+    // Debug: Check if address is properly aligned
+    if (buffer_addr % 4 != 0) {
+        std::cout << "[NiceShot] WARNING: Buffer address not 4-byte aligned: 0x" << std::hex << buffer_addr << std::dec << std::endl;
+    }
+    
+    // Debug: Try to use Windows VirtualQuery to check if memory is valid
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(pixels, &mbi, sizeof(mbi)) != 0) {
+        std::cout << "[NiceShot] Memory info - BaseAddress: 0x" << std::hex << mbi.BaseAddress
+                  << ", RegionSize: " << std::dec << mbi.RegionSize
+                  << ", State: " << mbi.State 
+                  << ", Protect: 0x" << std::hex << mbi.Protect << std::dec << std::endl;
+        
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) == 0) {
+            std::cerr << "[NiceShot] Memory region is not readable or committed" << std::endl;
+            return 0.0;
+        }
+    } else {
+        std::cerr << "[NiceShot] VirtualQuery failed for buffer address" << std::endl;
+        return 0.0;
+    }
+#endif
+    
+    // Try to safely read first few pixels to validate buffer
+    std::cout << "[NiceShot] Attempting to read first pixel at address 0x" << std::hex << buffer_addr << std::dec << std::endl;
+    try {
+        volatile uint8_t test_read = pixels[0];
+        volatile uint8_t test_read2 = pixels[3]; // RGBA, so 4th byte
+        std::cout << "[NiceShot] Buffer validation passed, first pixel: " 
+                  << (int)pixels[0] << "," << (int)pixels[1] << "," << (int)pixels[2] << "," << (int)pixels[3] << std::endl;
+    } catch (...) {
+        std::cerr << "[NiceShot] Buffer access test failed - invalid memory" << std::endl;
+        return 0.0;
+    }
     
     // Open file for writing
     FILE* fp = nullptr;
@@ -178,12 +249,12 @@ double niceshot_save_png(double buffer_ptr, double width, double height, const c
     // Set up PNG file writing
     png_init_io(png_ptr, fp);
     
-    // Set PNG header information
+    // Set PNG header information - explicitly disable interlacing
     png_set_IHDR(png_ptr, info_ptr, 
                  img_width, img_height,
                  8, // bit depth
                  PNG_COLOR_TYPE_RGBA, // color type (RGBA)
-                 PNG_INTERLACE_NONE,
+                 PNG_INTERLACE_NONE, // CRITICAL: No interlacing
                  PNG_COMPRESSION_TYPE_DEFAULT,
                  PNG_FILTER_TYPE_DEFAULT);
     
@@ -193,16 +264,30 @@ double niceshot_save_png(double buffer_ptr, double width, double height, const c
     // Write header
     png_write_info(png_ptr, info_ptr);
     
-    // Prepare row pointers
-    std::vector<png_bytep> row_pointers(img_height);
+    // Prepare row pointers - write one row at a time to avoid interlacing issues
     uint32_t stride = img_width * 4; // RGBA = 4 bytes per pixel
     
+    // Write image data row by row with additional safety checks
+    std::cout << "[NiceShot] Writing PNG rows..." << std::endl;
     for (uint32_t y = 0; y < img_height; ++y) {
-        row_pointers[y] = pixels + (y * stride);
+        png_bytep row = pixels + (y * stride);
+        
+        // Additional safety: validate row pointer before each write
+        if (row < pixels || row >= pixels + (img_width * img_height * 4)) {
+            std::cerr << "[NiceShot] Row pointer out of bounds at row " << y << std::endl;
+            png_destroy_write_struct(&png_ptr, &info_ptr);
+            fclose(fp);
+            return 0.0;
+        }
+        
+        png_write_row(png_ptr, row);
+        
+        // Progress indicator for debugging
+        if (y % 100 == 0) {
+            std::cout << "[NiceShot] Written row " << y << "/" << img_height << std::endl;
+        }
     }
-    
-    // Write image data
-    png_write_image(png_ptr, row_pointers.data());
+    std::cout << "[NiceShot] All rows written successfully" << std::endl;
     
     // Finish writing
     png_write_end(png_ptr, nullptr);

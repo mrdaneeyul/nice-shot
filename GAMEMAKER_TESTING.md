@@ -6,9 +6,9 @@
 // Test function - creates a 100x100 gradient PNG
 niceshot_test_png()  // Returns 1.0 on success, 0.0 on failure
 
-// Real PNG save function  
-niceshot_save_png(buffer_ptr, width, height, filepath)
-// - buffer_ptr: GameMaker buffer address (use buffer_get_address())
+// Real PNG save function (UPDATED - uses string for buffer pointer)
+niceshot_save_png(buffer_ptr_str, width, height, filepath)
+// - buffer_ptr_str: GameMaker buffer address as STRING (use string(buffer_get_address()))
 // - width, height: Image dimensions
 // - filepath: Full path where to save PNG (e.g., "screenshot.png")
 // Returns 1.0 on success, 0.0 on failure
@@ -47,23 +47,20 @@ if (surface_exists(application_surface)) {
     var surf_w = surface_get_width(application_surface);
     var surf_h = surface_get_height(application_surface);
     
-    // Create buffer from surface
+    // Create buffer from surface - use buffer_grow for better stability
     var buffer = buffer_create(surf_w * surf_h * 4, buffer_fixed, 1);
     buffer_get_surface(buffer, application_surface, 0);
     
-    // Save as PNG using our extension
-    var save_result = niceshot_save_png(
-        buffer_get_address(buffer), 
-        surf_w, 
-        surf_h, 
-        "gamemaker_screenshot.png"
-    );
+    // IMPORTANT: Get the address and call the extension immediately
+    // Don't do anything else between getting the address and calling the DLL
+    var buffer_addr = string(buffer_get_address(buffer));
+    var save_result = niceshot_save_png(buffer_addr, surf_w, surf_h, working_directory + "gamemaker_screenshot.png");
     
-    // Cleanup
+    // Only cleanup after the PNG save is complete
     buffer_delete(buffer);
     
     if (save_result > 0) {
-        show_debug_message("SUCCESS: gamemaker_screenshot.png saved!");
+        show_debug_message("SUCCESS: gamemaker_screenshot.png saved to " + working_directory);
     } else {
         show_debug_message("FAILED: Screenshot save failed");
     }
@@ -85,12 +82,9 @@ if (surface_exists(application_surface)) {
     var buffer = buffer_create(surf_w * surf_h * 4, buffer_fixed, 1);
     buffer_get_surface(buffer, application_surface, 0);
     
-    var result = niceshot_save_png(
-        buffer_get_address(buffer),
-        surf_w,
-        surf_h,
-        filepath  // Your existing filepath variable
-    );
+    // Get address and call immediately - critical for buffer stability
+    var buffer_addr = string(buffer_get_address(buffer));
+    var result = niceshot_save_png(buffer_addr, surf_w, surf_h, filepath);
     
     buffer_delete(buffer);
     
