@@ -7,6 +7,14 @@
 #include <sstream>
 #include <png.h>
 #include <zlib.h>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <atomic>
+#include <memory>
+#include <unordered_map>
+#include <string>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -31,6 +39,168 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Global state
 static bool g_initialized = false;
 
+// Async PNG Job System
+enum class JobStatus {
+    QUEUED = 0,
+    PROCESSING = 1,
+    COMPLETED = 2,
+    FAILED = -1
+};
+
+struct PngJob {
+    uint32_t job_id;
+    std::vector<uint8_t> buffer_data;  // Copied buffer data for thread safety
+    uint32_t width;
+    uint32_t height;
+    std::string filepath;
+    JobStatus status;
+    std::string error_message;
+    
+    PngJob(uint32_t id, const uint8_t* pixels, uint32_t w, uint32_t h, const std::string& path)
+        : job_id(id), width(w), height(h), filepath(path), status(JobStatus::QUEUED)
+    {
+        // Copy buffer data for thread safety
+        size_t buffer_size = static_cast<size_t>(width) * height * 4; // RGBA = 4 bytes per pixel
+        buffer_data.resize(buffer_size);
+        std::memcpy(buffer_data.data(), pixels, buffer_size);
+    }
+};
+
+// Global async system state
+static std::atomic<uint32_t> g_next_job_id{1};
+static std::queue<std::shared_ptr<PngJob>> g_job_queue;
+static std::unordered_map<uint32_t, std::shared_ptr<PngJob>> g_active_jobs;
+static std::mutex g_job_mutex;
+static std::condition_variable g_job_condition;
+static std::thread g_worker_thread;
+static std::atomic<bool> g_worker_thread_running{false};
+static std::atomic<bool> g_shutdown_requested{false};
+
+// Forward declarations for internal functions
+static bool encode_png_to_file(const uint8_t* pixels, uint32_t width, uint32_t height, const std::string& filepath, std::string& error_message);
+static void worker_thread_main();
+
+// Worker thread main function
+static void worker_thread_main() {
+    std::cout << "[NiceShot] Worker thread started" << std::endl;
+    
+    while (!g_shutdown_requested.load()) {
+        std::shared_ptr<PngJob> job = nullptr;
+        
+        // Get next job from queue
+        {
+            std::unique_lock<std::mutex> lock(g_job_mutex);
+            
+            // Wait for job or shutdown signal
+            g_job_condition.wait(lock, [] { 
+                return !g_job_queue.empty() || g_shutdown_requested.load(); 
+            });
+            
+            if (g_shutdown_requested.load() && g_job_queue.empty()) {
+                break; // Exit thread
+            }
+            
+            if (!g_job_queue.empty()) {
+                job = g_job_queue.front();
+                g_job_queue.pop();
+                job->status = JobStatus::PROCESSING;
+            }
+        }
+        
+        // Process job outside the lock
+        if (job) {
+            std::cout << "[NiceShot] Processing job " << job->job_id << ": " << job->filepath << std::endl;
+            
+            // Encode PNG using existing logic
+            bool success = encode_png_to_file(
+                job->buffer_data.data(),
+                job->width,
+                job->height,
+                job->filepath,
+                job->error_message
+            );
+            
+            // Update job status
+            {
+                std::lock_guard<std::mutex> lock(g_job_mutex);
+                job->status = success ? JobStatus::COMPLETED : JobStatus::FAILED;
+                if (success) {
+                    std::cout << "[NiceShot] Job " << job->job_id << " completed successfully" << std::endl;
+                } else {
+                    std::cout << "[NiceShot] Job " << job->job_id << " failed: " << job->error_message << std::endl;
+                }
+            }
+        }
+    }
+    
+    std::cout << "[NiceShot] Worker thread exiting" << std::endl;
+}
+
+// PNG encoding function extracted from niceshot_save_png
+static bool encode_png_to_file(const uint8_t* pixels, uint32_t width, uint32_t height, const std::string& filepath, std::string& error_message) {
+    // Open file for writing
+    FILE* fp = nullptr;
+#ifdef _WIN32
+    fopen_s(&fp, filepath.c_str(), "wb");
+#else
+    fp = fopen(filepath.c_str(), "wb");
+#endif
+    
+    if (!fp) {
+        error_message = "Failed to open file for writing: " + filepath;
+        return false;
+    }
+    
+    // Initialize PNG structures
+    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (!png_ptr) {
+        error_message = "Failed to create PNG write structure";
+        fclose(fp);
+        return false;
+    }
+    
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr) {
+        error_message = "Failed to create PNG info structure";
+        png_destroy_write_struct(&png_ptr, nullptr);
+        fclose(fp);
+        return false;
+    }
+    
+    // Error handling with setjmp/longjmp
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        error_message = "PNG encoding error occurred";
+        png_destroy_write_struct(&png_ptr, &info_ptr);
+        fclose(fp);
+        return false;
+    }
+    
+    // Set up PNG file writing
+    png_init_io(png_ptr, fp);
+    
+    // Set PNG header information
+    png_set_IHDR(png_ptr, info_ptr, 
+                 width, height,
+                 8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    
+    png_set_compression_level(png_ptr, 6);
+    png_write_info(png_ptr, info_ptr);
+    
+    // Write image data row by row
+    uint32_t stride = width * 4;
+    for (uint32_t y = 0; y < height; ++y) {
+        png_bytep row = const_cast<png_bytep>(pixels + (y * stride));
+        png_write_row(png_ptr, row);
+    }
+    
+    png_write_end(png_ptr, nullptr);
+    png_destroy_write_struct(&png_ptr, &info_ptr);
+    fclose(fp);
+    
+    return true;
+}
+
 // GameMaker interface implementation
 extern "C" {
 
@@ -53,14 +223,18 @@ double niceshot_init() {
     try {
         std::cout << "[NiceShot] Initializing extension..." << std::endl;
         
-        // TODO: Initialize libpng, thread pool, etc.
+        // Reset shutdown flag and start worker thread
+        g_shutdown_requested = false;
+        g_worker_thread_running = true;
+        g_worker_thread = std::thread(worker_thread_main);
         
         g_initialized = true;
-        std::cout << "[NiceShot] Extension initialized successfully" << std::endl;
+        std::cout << "[NiceShot] Extension initialized successfully with worker thread" << std::endl;
         return 1.0; // Success
     }
     catch (const std::exception& e) {
         std::cerr << "[NiceShot] Initialization failed: " << e.what() << std::endl;
+        g_worker_thread_running = false;
         return 0.0; // Failure
     }
 }
@@ -74,7 +248,27 @@ double niceshot_shutdown() {
     try {
         std::cout << "[NiceShot] Shutting down extension..." << std::endl;
         
-        // TODO: Cleanup libpng, thread pool, etc.
+        // Signal worker thread to shutdown
+        g_shutdown_requested = true;
+        g_job_condition.notify_all(); // Wake up worker thread
+        
+        // Wait for worker thread to finish
+        if (g_worker_thread.joinable()) {
+            g_worker_thread.join();
+        }
+        g_worker_thread_running = false;
+        
+        // Clear any remaining jobs
+        {
+            std::lock_guard<std::mutex> lock(g_job_mutex);
+            while (!g_job_queue.empty()) {
+                g_job_queue.pop();
+            }
+            g_active_jobs.clear();
+        }
+        
+        // Reset job ID counter
+        g_next_job_id = 1;
         
         g_initialized = false;
         std::cout << "[NiceShot] Extension shutdown successfully" << std::endl;
@@ -359,6 +553,114 @@ double niceshot_save_png(const char* buffer_ptr_str, double width, double height
     std::cout << "[NiceShot] PNG saved successfully: " << filepath << " (" << img_width << "x" << img_height << ")" << std::endl;
     
     return 1.0; // Success
+}
+
+// Async PNG functions
+double niceshot_save_png_async(const char* buffer_ptr_str, double width, double height, const char* filepath) {
+    if (!g_initialized) {
+        std::cerr << "[NiceShot] Extension not initialized" << std::endl;
+        return 0.0;
+    }
+    
+    if (!buffer_ptr_str || width <= 0 || height <= 0 || !filepath) {
+        std::cerr << "[NiceShot] Invalid parameters for async PNG save" << std::endl;
+        return 0.0;
+    }
+    
+    // Parse buffer pointer from string
+    uintptr_t buffer_addr = 0;
+    if (sscanf(buffer_ptr_str, "%llx", &buffer_addr) != 1 || buffer_addr == 0) {
+        std::cerr << "[NiceShot] Invalid buffer pointer string for async save: " << buffer_ptr_str << std::endl;
+        return 0.0;
+    }
+    
+    uint8_t* pixels = reinterpret_cast<uint8_t*>(buffer_addr);
+    uint32_t img_width = static_cast<uint32_t>(width);
+    uint32_t img_height = static_cast<uint32_t>(height);
+    
+    // Generate unique job ID
+    uint32_t job_id = g_next_job_id.fetch_add(1);
+    
+    try {
+        // Create job with copied buffer data
+        auto job = std::make_shared<PngJob>(job_id, pixels, img_width, img_height, std::string(filepath));
+        
+        // Queue job
+        {
+            std::lock_guard<std::mutex> lock(g_job_mutex);
+            g_job_queue.push(job);
+            g_active_jobs[job_id] = job;
+        }
+        
+        // Notify worker thread
+        g_job_condition.notify_one();
+        
+        std::cout << "[NiceShot] Queued async PNG job " << job_id << ": " << filepath 
+                  << " (" << img_width << "x" << img_height << ")" << std::endl;
+        
+        return static_cast<double>(job_id);
+    }
+    catch (const std::exception& e) {
+        std::cerr << "[NiceShot] Failed to queue async PNG job: " << e.what() << std::endl;
+        return 0.0;
+    }
+}
+
+double niceshot_get_job_status(double job_id) {
+    if (!g_initialized) {
+        return -2.0; // Not initialized
+    }
+    
+    uint32_t id = static_cast<uint32_t>(job_id);
+    if (id == 0) {
+        return -2.0; // Invalid job ID
+    }
+    
+    std::lock_guard<std::mutex> lock(g_job_mutex);
+    auto it = g_active_jobs.find(id);
+    if (it == g_active_jobs.end()) {
+        return -2.0; // Job not found
+    }
+    
+    return static_cast<double>(static_cast<int>(it->second->status));
+}
+
+double niceshot_cleanup_job(double job_id) {
+    if (!g_initialized) {
+        return 0.0;
+    }
+    
+    uint32_t id = static_cast<uint32_t>(job_id);
+    if (id == 0) {
+        return 0.0;
+    }
+    
+    std::lock_guard<std::mutex> lock(g_job_mutex);
+    auto it = g_active_jobs.find(id);
+    if (it == g_active_jobs.end()) {
+        return 0.0; // Job not found
+    }
+    
+    // Only cleanup completed or failed jobs
+    if (it->second->status == JobStatus::COMPLETED || it->second->status == JobStatus::FAILED) {
+        g_active_jobs.erase(it);
+        return 1.0; // Success
+    }
+    
+    return 0.0; // Job still processing
+}
+
+double niceshot_get_pending_job_count() {
+    if (!g_initialized) {
+        return -1.0;
+    }
+    
+    std::lock_guard<std::mutex> lock(g_job_mutex);
+    return static_cast<double>(g_job_queue.size());
+}
+
+double niceshot_worker_thread_status() {
+    return g_worker_thread_running.load() ? 1.0 : 0.0;
 }
 
 } // extern "C"
