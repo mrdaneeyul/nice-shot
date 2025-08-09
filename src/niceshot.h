@@ -85,10 +85,10 @@ extern "C" {
     
     // Video Recording Functions
     
-    // Start video recording with specified settings (all string parameters for GameMaker compatibility)
-    // Parameters: width_str, height_str, fps_str, bitrate_kbps_str, max_buffer_frames_str, filepath
+    // Start video recording with specified settings (width,height,fps,bitrate,buffer_frames)
+    // Parameters: settings_str, filepath
     // Returns: 1.0 on success, 0.0 on failure
-    NICESHOT_API double niceshot_start_recording(const char* width_str, const char* height_str, const char* fps_str, const char* bitrate_kbps_str, const char* max_buffer_frames_str, const char* filepath);
+    NICESHOT_API double niceshot_start_recording(const char* settings_str, const char* filepath);
     
     // Record a single frame (call this every frame during recording)
     // Parameters: buffer_ptr_str (GameMaker buffer address as string)

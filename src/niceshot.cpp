@@ -973,23 +973,37 @@ double niceshot_benchmark_png(double width, double height, double iterations) {
 
 // Video Recording Functions
 
-double niceshot_start_recording(const char* width_str, const char* height_str, const char* fps_str, const char* bitrate_kbps_str, const char* max_buffer_frames_str, const char* filepath) {
+double niceshot_start_recording(const char* settings_str, const char* filepath) {
     if (!g_initialized) {
         std::cerr << "[NiceShot] Extension not initialized" << std::endl;
         return 0.0;
     }
     
-    if (!width_str || !height_str || !fps_str || !bitrate_kbps_str || !max_buffer_frames_str || !filepath) {
+    if (!settings_str || !filepath) {
         std::cerr << "[NiceShot] Invalid recording parameters (null strings)" << std::endl;
         return 0.0;
     }
     
-    // Parse string arguments to numeric values
-    double width = std::atof(width_str);
-    double height = std::atof(height_str);
-    double fps = std::atof(fps_str);
-    double bitrate_kbps = std::atof(bitrate_kbps_str);
-    double max_buffer_frames = std::atof(max_buffer_frames_str);
+    // Parse settings string arguments to numeric values: "width,height,fps,bitrate,buffer_frames"
+    // Example: "1920,1080,60,5000,120"
+    std::string settings(settings_str);
+    std::vector<std::string> params;
+    std::stringstream ss(settings);
+    std::string item;
+
+    while (std::getline(ss, item, ',')) {
+        params.push_back(item);
+    }
+
+    if (params.size() != 5) {
+        std::cerr << "[NiceShot] Invalid settings format. Expected 'width,height,fps,bitrate,buffer_frames'" << std::endl;
+    }
+
+    double width = std::atof(params[0].c_str());
+    double height = std::atof(params[1].c_str());
+    double fps = std::atof(params[2].c_str());
+    double bitrate_kbps = std::atof(params[3].c_str());
+    double max_buffer_frames = std::atof(params[4].c_str());
     
     if (width <= 0 || height <= 0 || fps <= 0 || bitrate_kbps <= 0 || max_buffer_frames <= 0) {
         std::cerr << "[NiceShot] Invalid recording parameters after parsing: " 
