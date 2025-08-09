@@ -32,6 +32,13 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  
+  <!-- vcpkg integration for automatic library linking -->
+  <PropertyGroup>
+    <VcpkgEnabled Condition="'$(VcpkgEnabled)' == ''">true</VcpkgEnabled>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == ''">$(SolutionDir)..\..\vcpkg</VcpkgRoot>
+  </PropertyGroup>
+  <Import Project="$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.props" Condition="Exists('$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.props')" />
   <PropertyGroup>
     <TargetName>NiceShot</TargetName>
     <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
@@ -87,4 +94,5 @@
     <ClCompile Include="src\niceshot.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.targets" Condition="Exists('$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.targets')" />
 </Project>

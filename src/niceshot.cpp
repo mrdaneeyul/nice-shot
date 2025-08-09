@@ -21,10 +21,8 @@
 #include <windows.h>
 #endif
 
-// x264 H.264 encoder (will be available once vcpkg installation completes)
-#ifdef HAVE_X264
+#define HAVE_X264
 #include <x264.h>
-#endif
 
 // DLL entry point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
