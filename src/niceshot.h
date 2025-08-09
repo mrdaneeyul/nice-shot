@@ -115,4 +115,8 @@ extern "C" {
     // Parameters: preset (0=ultrafast, 1=fast, 2=medium, 3=slow, 4=slower)
     // Returns: 1.0 on success, 0.0 on failure
     NICESHOT_API double niceshot_set_video_preset(double preset);
+    
+    // Test x264 H.264 encoder availability and functionality
+    // Returns: 1.0 if x264 available and working, 0.0 if not available/failed
+    NICESHOT_API double niceshot_test_x264();
 }

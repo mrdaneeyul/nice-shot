@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(msbuild:*)",
-      "Bash(\"/mnt/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" NiceShot.vcxproj /p:Configuration=Release /p:Platform=x64)"
+      "Bash(\"/mnt/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" NiceShot.vcxproj /p:Configuration=Release /p:Platform=x64)",
+      "Bash(\"C:\\Users\\Daniel\\source\\repos\\vcpkg\\vcpkg.exe\" list)",
+      "Bash(\"/mnt/c/Users/Daniel/source/repos/vcpkg/vcpkg.exe\" list)"
     ],
     "deny": []
   }

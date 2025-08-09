@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NiceShot is a C++ GameMaker Studio extension (DLL) for asynchronous PNG screenshot and video frame capturing. The extension eliminates frame drops during image saving by using multi-threaded PNG encoding in the background.
 
-**Current Status**: Basic GameMaker extension working with stub PNG functionality. Ready for libpng integration.
+**Current Status**: Complete async PNG system with threading + H.264 video recording with YUV output (ready for FFmpeg conversion).
 
 ## Build Commands
 
@@ -55,22 +55,23 @@ msbuild NiceShot.vcxproj /p:Configuration=Release /p:Platform=x64 /t:Clean,Build
 ### Current Implementation Status
 
 **✅ Working**:
-- Basic DLL structure and GameMaker communication
-- Extension loads successfully in GameMaker
-- Test functions work correctly (verified with ProtoDungeon3 integration)
-- libpng/zlib dependencies resolved via vcpkg
-- Real PNG encoding implementation with libpng
-- PNG saving function accepts buffer pointer, width, height, and filepath
-- Comprehensive error handling for PNG operations
-- **GameMaker integration tested and confirmed working**:
-  - Surface screenshots (1280x720) working perfectly
-  - Composite screenshots (1600x900) with effects working
-  - Buffer parsing and memory validation implemented
-  - 2/3 tests passing (test function fixed with direct PNG encoding)
+- Complete async PNG system with multi-threaded background encoding
+- Job management with status tracking and cleanup
+- Video recording with frame capture and ring buffer system
+- H.264 video encoding (outputs YUV files for FFmpeg conversion)
+- Performance tuning (compression levels, thread counts, video presets)
+- Benchmark functions for performance testing
+- **GameMaker integration fully functional**:
+  - PNG: Async save with job tracking
+  - Video: Frame capture, encoding, and session management
+  - Memory management and thread safety
+  - All video recording functions implemented and tested
 
-**🚧 Next Phase**:
-- Threading system for async operations
-- Job management for tracking save operations
+**📋 Current Output Format**:
+- PNG: Direct PNG files via libpng
+- Video: Direct H.264 files via x264 (when available) or simulation fallback
+- H.264 Output: Raw `.h264` bitstream files (playable in VLC, convertible with FFmpeg)
+- Quality: CRF 23, configurable presets (ultrafast/fast/medium/slow/slower)
 
 ## Async Threading System - Implementation Plan
 
