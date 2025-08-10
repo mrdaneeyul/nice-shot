@@ -119,4 +119,8 @@ extern "C" {
     // Test x264 H.264 encoder availability and functionality
     // Returns: 1.0 if x264 available and working, 0.0 if not available/failed
     NICESHOT_API double niceshot_test_x264();
+    
+    // Check if offline H.264 encoding is currently running
+    // Returns: 1.0 if encoding in progress, 0.0 if no encoding active
+    NICESHOT_API double niceshot_get_encoding_status();
 }

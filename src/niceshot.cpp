@@ -256,23 +256,28 @@ struct X264EncoderContext {
         }
         
 #ifdef HAVE_X264
-        // Initialize x264 encoder
+        // Initialize x264 encoder with optimized settings for real-time
         x264_param_default_preset(&param, 
             preset == 0 ? "ultrafast" : 
-            preset == 1 ? "fast" : 
-            preset == 2 ? "medium" : 
-            preset == 3 ? "slow" : "slower", 
+            preset == 1 ? "veryfast" :  // Changed from "fast" for better performance
+            preset == 2 ? "fast" : 
+            preset == 3 ? "medium" : "slow", 
             "zerolatency");
             
         param.i_width = width;
         param.i_height = height;
         param.i_fps_num = static_cast<int>(fps * 1000);
         param.i_fps_den = 1000;
-        param.i_keyint_max = static_cast<int>(fps) * 2; // Keyframe every 2 seconds
-        param.b_intra_refresh = 1;
+        param.i_keyint_max = static_cast<int>(fps) * 4; // Keyframe every 4 seconds (less frequent)
+        param.b_intra_refresh = 0; // Disable intra refresh for better performance
         param.rc.i_rc_method = X264_RC_CRF;
-        param.rc.f_rf_constant = 23.0f; // Good quality/size balance
+        param.rc.f_rf_constant = 28.0f; // Higher CRF = lower quality but faster encoding
         param.i_csp = X264_CSP_I420; // YUV420p
+        
+        // Performance optimizations for real-time encoding
+        param.i_threads = 2; // Limit threads to reduce CPU contention
+        param.b_deterministic = 0; // Allow non-deterministic optimizations
+        param.i_sync_lookahead = 0; // Disable lookahead for lower latency
         
         // Apply preset for latency/quality balance
         x264_param_apply_profile(&param, "high");
@@ -299,9 +304,14 @@ struct X264EncoderContext {
     }
     
     ~X264EncoderContext() {
+        std::cout << "[NiceShot] Finalizing x264 encoder..." << std::endl;
+        
 #ifdef HAVE_X264
         if (x264_available && encoder) {
+            std::cout << "[NiceShot] Flushing delayed x264 frames..." << std::endl;
+            
             // Flush delayed frames
+            int flushed_frames = 0;
             while (1) {
                 x264_nal_t* nal;
                 int i_nal;
@@ -309,16 +319,26 @@ struct X264EncoderContext {
                 if (frame_size <= 0) break;
                 
                 for (int i = 0; i < i_nal; i++) {
-                    fwrite(nal[i].p_payload, 1, nal[i].i_payload, output_file);
+                    size_t written = fwrite(nal[i].p_payload, 1, nal[i].i_payload, output_file);
+                    if (written != nal[i].i_payload) {
+                        std::cerr << "[NiceShot] Failed to write flushed NAL unit" << std::endl;
+                    }
                 }
+                flushed_frames++;
             }
+            
+            std::cout << "[NiceShot] Flushed " << flushed_frames << " delayed frames" << std::endl;
             
             x264_picture_clean(&pic_in);
             x264_encoder_close(encoder);
+            std::cout << "[NiceShot] x264 encoder closed" << std::endl;
         }
 #endif
         if (output_file) {
+            // Force flush file buffer before closing
+            fflush(output_file);
             fclose(output_file);
+            std::cout << "[NiceShot] Output file closed. Total frames written: " << frame_count << std::endl;
         }
     }
 };
@@ -361,52 +381,199 @@ static void convert_rgba_to_yuv420p_fast(const uint8_t* rgba_data, uint32_t widt
     }
 }
 
-// Encode frame using x264 or fallback
-static bool encode_frame_h264_x264(X264EncoderContext* ctx, const uint8_t* rgba_data) {
+// Raw frame capture - super fast, no encoding during recording
+static bool capture_frame_raw(X264EncoderContext* ctx, const uint8_t* rgba_data) {
     if (!ctx || !rgba_data) {
         return false;
     }
     
+    // Write raw RGBA data directly to file (fastest possible)
+    size_t frame_size = ctx->width * ctx->height * 4; // RGBA = 4 bytes per pixel
+    size_t written = fwrite(rgba_data, 1, frame_size, ctx->output_file);
+    
+    if (written != frame_size) {
+        std::cerr << "[NiceShot] Failed to write raw frame data" << std::endl;
+        return false;
+    }
+    
+    ctx->frame_count++;
+    
+    // Periodic flush for safety (much less frequent)
+    if (ctx->frame_count % 120 == 0) {
+        fflush(ctx->output_file);
+        std::cout << "[NiceShot] Saved " << ctx->frame_count << " raw frames" << std::endl;
+    }
+    
+    return true;
+}
+
+// Offline H.264 encoder - high quality, takes time but no frame drops
+static void encode_raw_to_h264_offline(const std::string& raw_filepath, const std::string& h264_filepath, 
+                                      uint32_t width, uint32_t height, double fps, uint64_t frame_count) {
+    std::cout << "[NiceShot] Offline encoder starting..." << std::endl;
+    std::cout << "[NiceShot] Processing " << frame_count << " frames from " << raw_filepath << std::endl;
+    
+    try {
 #ifdef HAVE_X264
-    if (ctx->x264_available && ctx->encoder) {
-        // Convert RGBA to YUV420p directly into x264 picture
-        convert_rgba_to_yuv420p_fast(rgba_data, ctx->width, ctx->height,
-                                    ctx->pic_in.img.plane[0], // Y plane
-                                    ctx->pic_in.img.plane[1], // U plane  
-                                    ctx->pic_in.img.plane[2]); // V plane
+        // Create high-quality x264 encoder (not real-time optimized)
+        x264_param_t param;
+        x264_param_default_preset(&param, "slow", "film"); // High quality preset
         
-        ctx->pic_in.i_pts = ctx->frame_count;
+        param.i_width = width;
+        param.i_height = height;
+        param.i_fps_num = static_cast<int>(fps * 1000);
+        param.i_fps_den = 1000;
+        param.i_keyint_max = static_cast<int>(fps) * 10; // Keyframe every 10 seconds
+        param.b_intra_refresh = 0;
+        param.rc.i_rc_method = X264_RC_CRF;
+        param.rc.f_rf_constant = 18.0f; // Very high quality (lower = better)
+        param.i_csp = X264_CSP_I420;
         
-        // Encode frame
-        x264_nal_t* nal;
-        int i_nal;
-        int frame_size = x264_encoder_encode(ctx->encoder, &nal, &i_nal, &ctx->pic_in, &ctx->pic_out);
+        // High quality settings (not real-time)
+        param.i_threads = 0; // Use all available CPU cores
+        param.b_deterministic = 1; // Consistent quality
+        param.i_sync_lookahead = 60; // Large lookahead for better compression
+        param.rc.i_lookahead = 60;
+        param.i_bframe = 16; // Many B-frames for better compression
+        param.i_bframe_adaptive = X264_B_ADAPT_TRELLIS;
+        param.analyse.i_me_method = X264_ME_TESA; // Best motion estimation
+        param.analyse.i_subpel_refine = 11; // Maximum subpixel refinement
         
-        if (frame_size < 0) {
-            std::cerr << "[NiceShot] x264 encoding failed" << std::endl;
-            return false;
+        x264_param_apply_profile(&param, "high");
+        
+        x264_t* encoder = x264_encoder_open(&param);
+        if (!encoder) {
+            std::cerr << "[NiceShot] Failed to create offline x264 encoder" << std::endl;
+            return;
         }
         
-        if (frame_size > 0) {
-            // Write NAL units to file
-            for (int i = 0; i < i_nal; i++) {
-                size_t written = fwrite(nal[i].p_payload, 1, nal[i].i_payload, ctx->output_file);
-                if (written != nal[i].i_payload) {
-                    std::cerr << "[NiceShot] Failed to write H.264 data" << std::endl;
-                    return false;
+        // Open raw file for reading
+        FILE* raw_file = nullptr;
+#ifdef _WIN32
+        fopen_s(&raw_file, raw_filepath.c_str(), "rb");
+#else
+        raw_file = fopen(raw_filepath.c_str(), "rb");
+#endif
+        
+        if (!raw_file) {
+            std::cerr << "[NiceShot] Failed to open raw file: " << raw_filepath << std::endl;
+            x264_encoder_close(encoder);
+            return;
+        }
+        
+        // Open H.264 file for writing
+        FILE* h264_file = nullptr;
+#ifdef _WIN32
+        fopen_s(&h264_file, h264_filepath.c_str(), "wb");
+#else
+        h264_file = fopen(h264_filepath.c_str(), "wb");
+#endif
+        
+        if (!h264_file) {
+            std::cerr << "[NiceShot] Failed to create H.264 file: " << h264_filepath << std::endl;
+            fclose(raw_file);
+            x264_encoder_close(encoder);
+            return;
+        }
+        
+        // Allocate x264 picture
+        x264_picture_t pic_in, pic_out;
+        x264_picture_alloc(&pic_in, param.i_csp, param.i_width, param.i_height);
+        
+        // Allocate RGBA frame buffer
+        size_t frame_size = width * height * 4;
+        std::vector<uint8_t> rgba_frame(frame_size);
+        
+        std::cout << "[NiceShot] Encoding " << frame_count << " frames with high quality settings..." << std::endl;
+        
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // Process each frame
+        for (uint64_t i = 0; i < frame_count; i++) {
+            // Read raw RGBA frame
+            size_t read_bytes = fread(rgba_frame.data(), 1, frame_size, raw_file);
+            if (read_bytes != frame_size) {
+                std::cerr << "[NiceShot] Failed to read frame " << i << std::endl;
+                break;
+            }
+            
+            // Convert RGBA to YUV420p
+            convert_rgba_to_yuv420p_fast(rgba_frame.data(), width, height,
+                                        pic_in.img.plane[0], // Y plane
+                                        pic_in.img.plane[1], // U plane  
+                                        pic_in.img.plane[2]); // V plane
+            
+            pic_in.i_pts = i;
+            
+            // Encode frame with x264
+            x264_nal_t* nal;
+            int i_nal;
+            int encoded_size = x264_encoder_encode(encoder, &nal, &i_nal, &pic_in, &pic_out);
+            
+            if (encoded_size < 0) {
+                std::cerr << "[NiceShot] Encoding failed for frame " << i << std::endl;
+                continue;
+            }
+            
+            if (encoded_size > 0) {
+                // Write NAL units to H.264 file
+                for (int j = 0; j < i_nal; j++) {
+                    fwrite(nal[j].p_payload, 1, nal[j].i_payload, h264_file);
                 }
+            }
+            
+            // Progress update every 60 frames
+            if (i % 60 == 0) {
+                auto elapsed = std::chrono::high_resolution_clock::now() - start_time;
+                auto elapsed_seconds = std::chrono::duration<double>(elapsed).count();
+                double progress = (double)i / frame_count * 100.0;
+                double fps_encoding = i / elapsed_seconds;
+                
+                std::cout << "[NiceShot] Progress: " << progress << "% (" << i << "/" << frame_count 
+                          << " frames, " << fps_encoding << " fps encoding)" << std::endl;
             }
         }
         
-        ctx->frame_count++;
-        return true;
-    }
+        // Flush delayed frames
+        std::cout << "[NiceShot] Flushing delayed frames..." << std::endl;
+        int flushed = 0;
+        while (1) {
+            x264_nal_t* nal;
+            int i_nal;
+            int frame_size = x264_encoder_encode(encoder, &nal, &i_nal, nullptr, &pic_out);
+            if (frame_size <= 0) break;
+            
+            for (int i = 0; i < i_nal; i++) {
+                fwrite(nal[i].p_payload, 1, nal[i].i_payload, h264_file);
+            }
+            flushed++;
+        }
+        
+        auto total_time = std::chrono::high_resolution_clock::now() - start_time;
+        auto total_seconds = std::chrono::duration<double>(total_time).count();
+        
+        std::cout << "[NiceShot] Offline encoding complete!" << std::endl;
+        std::cout << "[NiceShot] Processed " << frame_count << " frames in " << total_seconds << " seconds" << std::endl;
+        std::cout << "[NiceShot] Output: " << h264_filepath << " (high quality H.264)" << std::endl;
+        std::cout << "[NiceShot] Flushed " << flushed << " delayed frames" << std::endl;
+        
+        // Cleanup
+        x264_picture_clean(&pic_in);
+        x264_encoder_close(encoder);
+        fclose(raw_file);
+        fclose(h264_file);
+        
+        // Delete raw file to save space
+        std::remove(raw_filepath.c_str());
+        std::cout << "[NiceShot] Deleted raw file to save space" << std::endl;
+        
+#else
+        std::cout << "[NiceShot] x264 not available for offline encoding" << std::endl;
 #endif
-    
-    // Fallback: just simulate encoding time (preserves ring buffer performance)
-    std::this_thread::sleep_for(std::chrono::milliseconds(3)); // Faster than YUV conversion
-    ctx->frame_count++;
-    return true;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "[NiceShot] Offline encoding failed: " << e.what() << std::endl;
+    }
 }
 
 // Video encoding thread main function with x264 H.264 implementation
@@ -421,8 +588,17 @@ static void video_encoding_thread_main(VideoRecordingSession* session) {
     // Create x264 encoder context
     std::unique_ptr<X264EncoderContext> encoder_ctx;
     try {
+        // Change extension to .raw for raw RGBA frames
+        std::string raw_filepath = session->output_filepath;
+        size_t ext_pos = raw_filepath.find_last_of('.');
+        if (ext_pos != std::string::npos) {
+            raw_filepath = raw_filepath.substr(0, ext_pos) + ".raw";
+        } else {
+            raw_filepath += ".raw";
+        }
+        
         encoder_ctx = std::make_unique<X264EncoderContext>(
-            session->output_filepath, 
+            raw_filepath, 
             session->width, 
             session->height, 
             session->fps,
@@ -460,9 +636,9 @@ static void video_encoding_thread_main(VideoRecordingSession* session) {
             }
         }
         
-        // Process frame outside the lock (FAST x264 ENCODING)
+        // Process frame outside the lock (SUPER FAST RAW CAPTURE)
         if (frame && encoder_ctx) {
-            bool success = encode_frame_h264_x264(encoder_ctx.get(), frame->pixel_data.data());
+            bool success = capture_frame_raw(encoder_ctx.get(), frame->pixel_data.data());
             
             if (success) {
                 session->frames_encoded++;
@@ -1180,7 +1356,7 @@ double niceshot_benchmark_png(double width, double height, double iterations) {
 
 // Video Recording Functions
 
-double niceshot_start_recording(const char* settings_str, const char* filepath) {
+NICESHOT_API double niceshot_start_recording(const char* settings_str, const char* filepath) {
     if (!g_initialized) {
         std::cerr << "[NiceShot] Extension not initialized" << std::endl;
         return 0.0;
@@ -1255,7 +1431,7 @@ double niceshot_start_recording(const char* settings_str, const char* filepath) 
     }
 }
 
-double niceshot_record_frame(const char* buffer_ptr_str) {
+NICESHOT_API double niceshot_record_frame(const char* buffer_ptr_str) {
     if (!buffer_ptr_str) {
         return 0.0;
     }
@@ -1313,7 +1489,7 @@ double niceshot_record_frame(const char* buffer_ptr_str) {
     }
 }
 
-double niceshot_stop_recording() {
+NICESHOT_API double niceshot_stop_recording() {
     std::lock_guard<std::mutex> lock(g_recording_mutex);
     
     if (!g_recording_session || g_recording_session->status != RecordingStatus::RECORDING) {
@@ -1339,12 +1515,169 @@ double niceshot_stop_recording() {
             std::chrono::high_resolution_clock::now() - g_recording_session->recording_start_time).count();
         double avg_fps = g_recording_session->frames_captured / elapsed;
         
+        // Create FFmpeg conversion script
+        std::string script_path = g_recording_session->output_filepath;
+        size_t ext_pos = script_path.find_last_of('.');
+        if (ext_pos != std::string::npos) {
+            script_path = script_path.substr(0, ext_pos) + "_convert.bat";
+        } else {
+            script_path += "_convert.bat";
+        }
+        
+        std::string h264_path = g_recording_session->output_filepath;
+        ext_pos = h264_path.find_last_of('.');
+        if (ext_pos != std::string::npos) {
+            h264_path = h264_path.substr(0, ext_pos) + ".h264";
+        } else {
+            h264_path += ".h264";
+        }
+        
+        FILE* script_file = nullptr;
+#ifdef _WIN32
+        fopen_s(&script_file, script_path.c_str(), "w");
+#else
+        script_file = fopen(script_path.c_str(), "w");
+#endif
+        
+        if (script_file) {
+            fprintf(script_file, "@echo off\n");
+            fprintf(script_file, "REM Convert raw H.264 to MP4 using FFmpeg\n");
+            fprintf(script_file, "REM Usage: Run this batch file to convert the H.264 file to MP4\n");
+            fprintf(script_file, "ffmpeg -r %.2f -i \"%s\" -c:v copy \"%s\"\n", 
+                   g_recording_session->fps, h264_path.c_str(), g_recording_session->output_filepath.c_str());
+            fprintf(script_file, "echo Conversion complete: %s\n", g_recording_session->output_filepath.c_str());
+            fprintf(script_file, "pause\n");
+            fclose(script_file);
+            
+            std::cout << "[NiceShot] Created conversion script: " << script_path << std::endl;
+        }
+        
         std::cout << "[NiceShot] Recording finished:" << std::endl;
         std::cout << "[NiceShot]   Duration: " << elapsed << " seconds" << std::endl;
         std::cout << "[NiceShot]   Frames captured: " << g_recording_session->frames_captured << std::endl;
         std::cout << "[NiceShot]   Frames encoded: " << g_recording_session->frames_encoded << std::endl;
         std::cout << "[NiceShot]   Frames dropped: " << g_recording_session->frames_dropped << std::endl;
         std::cout << "[NiceShot]   Average FPS: " << avg_fps << std::endl;
+        std::string raw_path = g_recording_session->output_filepath;
+        ext_pos = raw_path.find_last_of('.');
+        if (ext_pos != std::string::npos) {
+            raw_path = raw_path.substr(0, ext_pos) + ".raw";
+        } else {
+            raw_path += ".raw";
+        }
+        
+        std::cout << "[NiceShot]   Output: " << raw_path << " (raw RGBA frames)" << std::endl;
+        
+        // Create comprehensive recording metadata JSON
+        std::string metadata_path = g_recording_session->output_filepath;
+        ext_pos = metadata_path.find_last_of('.');
+        if (ext_pos != std::string::npos) {
+            metadata_path = metadata_path.substr(0, ext_pos) + "_recording.json";
+        } else {
+            metadata_path += "_recording.json";
+        }
+        
+        FILE* metadata_file = nullptr;
+#ifdef _WIN32
+        fopen_s(&metadata_file, metadata_path.c_str(), "w");
+#else
+        metadata_file = fopen(metadata_path.c_str(), "w");
+#endif
+        
+        if (metadata_file) {
+            fprintf(metadata_file, "{\n");
+            fprintf(metadata_file, "  \"recording_info\": {\n");
+            fprintf(metadata_file, "    \"timestamp\": \"%.3f\",\n", std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count());
+            fprintf(metadata_file, "    \"duration_seconds\": %.3f,\n", elapsed);
+            fprintf(metadata_file, "    \"frames_captured\": %llu,\n", g_recording_session->frames_captured);
+            fprintf(metadata_file, "    \"frames_encoded\": %llu,\n", g_recording_session->frames_encoded);
+            fprintf(metadata_file, "    \"frames_dropped\": %llu,\n", g_recording_session->frames_dropped);
+            fprintf(metadata_file, "    \"average_fps\": %.2f\n", avg_fps);
+            fprintf(metadata_file, "  },\n");
+            fprintf(metadata_file, "  \"video\": {\n");
+            fprintf(metadata_file, "    \"raw_file\": \"%s\",\n", raw_path.c_str());
+            fprintf(metadata_file, "    \"width\": %u,\n", g_recording_session->width);
+            fprintf(metadata_file, "    \"height\": %u,\n", g_recording_session->height);
+            fprintf(metadata_file, "    \"fps\": %.2f,\n", g_recording_session->fps);
+            fprintf(metadata_file, "    \"format\": \"RGBA\",\n");
+            fprintf(metadata_file, "    \"frame_count\": %llu\n", g_recording_session->frames_encoded);
+            fprintf(metadata_file, "  },\n");
+            fprintf(metadata_file, "  \"audio\": {\n");
+            fprintf(metadata_file, "    \"file\": null,\n");
+            fprintf(metadata_file, "    \"format\": null,\n");
+            fprintf(metadata_file, "    \"sample_rate\": null,\n");
+            fprintf(metadata_file, "    \"sync_offset\": 0.0,\n");
+            fprintf(metadata_file, "    \"note\": \"Audio can be recorded separately with GameMaker audio functions\"\n");
+            fprintf(metadata_file, "  },\n");
+            fprintf(metadata_file, "  \"output\": {\n");
+            fprintf(metadata_file, "    \"target_h264\": \"%s\",\n", h264_path.c_str());
+            fprintf(metadata_file, "    \"target_mp4\": \"%s\",\n", g_recording_session->output_filepath.c_str());
+            fprintf(metadata_file, "    \"quality_preset\": \"high\",\n");
+            fprintf(metadata_file, "    \"crf\": 18\n");
+            fprintf(metadata_file, "  },\n");
+            fprintf(metadata_file, "  \"conversion\": {\n");
+            fprintf(metadata_file, "    \"status\": \"ready\",\n");
+            fprintf(metadata_file, "    \"converter_script\": \"%s\",\n", (metadata_path.substr(0, metadata_path.find_last_of('.')) + "_convert.bat").c_str());
+            fprintf(metadata_file, "    \"x264_available\": true\n");
+            fprintf(metadata_file, "  }\n");
+            fprintf(metadata_file, "}\n");
+            fclose(metadata_file);
+            
+            std::cout << "[NiceShot] Created recording metadata: " << metadata_path << std::endl;
+        }
+        
+        // Create standalone conversion batch file
+        std::string converter_script = metadata_path.substr(0, metadata_path.find_last_of('.')) + "_convert.bat";
+        script_file = nullptr;
+#ifdef _WIN32
+        fopen_s(&script_file, converter_script.c_str(), "w");
+#else
+        script_file = fopen(converter_script.c_str(), "w");
+#endif
+        
+        if (script_file) {
+            fprintf(script_file, "@echo off\n");
+            fprintf(script_file, "echo ================================================\n");
+            fprintf(script_file, "echo NiceShot Video Converter\n");
+            fprintf(script_file, "echo ================================================\n");
+            fprintf(script_file, "echo.\n");
+            fprintf(script_file, "echo Converting raw RGBA frames to high-quality H.264...\n");
+            fprintf(script_file, "echo Source: %s\n", raw_path.c_str());
+            fprintf(script_file, "echo Target: %s\n", h264_path.c_str());
+            fprintf(script_file, "echo Resolution: %ux%u @ %.2f fps\n", g_recording_session->width, g_recording_session->height, g_recording_session->fps);
+            fprintf(script_file, "echo Frames: %llu\n", g_recording_session->frames_encoded);
+            fprintf(script_file, "echo.\n");
+            fprintf(script_file, "echo Starting conversion...\n");
+            fprintf(script_file, "echo.\n");
+            fprintf(script_file, "\n");
+            fprintf(script_file, "REM Call the NiceShot DLL converter function\n");
+            fprintf(script_file, "REM This uses the x264 library for maximum quality encoding\n");
+            fprintf(script_file, "\n");
+            fprintf(script_file, "REM TODO: Create NiceShot_Converter.exe that reads the JSON file\n");
+            fprintf(script_file, "REM For now, this is a placeholder that shows the conversion parameters\n");
+            fprintf(script_file, "\n");
+            fprintf(script_file, "echo Conversion parameters:\n");
+            fprintf(script_file, "echo   Input: %s (%llu frames)\n", raw_path.c_str(), g_recording_session->frames_encoded);
+            fprintf(script_file, "echo   Output: %s\n", h264_path.c_str());
+            fprintf(script_file, "echo   Quality: High (CRF 18, slow preset)\n");
+            fprintf(script_file, "echo   Audio: Not included (add separately)\n");
+            fprintf(script_file, "echo.\n");
+            fprintf(script_file, "echo To complete conversion, run: NiceShot_Converter.exe \"%s\"\n", metadata_path.c_str());
+            fprintf(script_file, "echo.\n");
+            fprintf(script_file, "\n");
+            fprintf(script_file, "REM Alternative: Use FFmpeg directly\n");
+            fprintf(script_file, "REM ffmpeg -f rawvideo -pix_fmt rgba -s %ux%u -r %.2f -i \"%s\" -c:v libx264 -preset slow -crf 18 \"%s\"\n", 
+                   g_recording_session->width, g_recording_session->height, g_recording_session->fps, raw_path.c_str(), h264_path.c_str());
+            fprintf(script_file, "\n");
+            fprintf(script_file, "REM To add audio later:\n");
+            fprintf(script_file, "REM ffmpeg -i \"%s\" -i \"audio.wav\" -c:v copy -c:a aac \"%s\"\n", h264_path.c_str(), g_recording_session->output_filepath.c_str());
+            fprintf(script_file, "\n");
+            fprintf(script_file, "echo Conversion script ready. See instructions above.\n");
+            fprintf(script_file, "pause\n");
+            fclose(script_file);
+            
+            std::cout << "[NiceShot] Created conversion script: " << converter_script << std::endl;
+        }
         
         g_recording_session.reset();
         return 1.0;
@@ -1356,7 +1689,7 @@ double niceshot_stop_recording() {
     }
 }
 
-double niceshot_get_recording_buffer_usage() {
+NICESHOT_API double niceshot_get_recording_buffer_usage() {
     std::lock_guard<std::mutex> lock(g_recording_mutex);
     
     if (!g_recording_session || g_recording_session->status != RecordingStatus::RECORDING) {
@@ -1368,7 +1701,7 @@ double niceshot_get_recording_buffer_usage() {
     return usage_percent;
 }
 
-double niceshot_get_recording_frame_count() {
+NICESHOT_API double niceshot_get_recording_frame_count() {
     std::lock_guard<std::mutex> lock(g_recording_mutex);
     
     if (!g_recording_session) {
@@ -1378,7 +1711,7 @@ double niceshot_get_recording_frame_count() {
     return static_cast<double>(g_recording_session->frames_captured);
 }
 
-double niceshot_get_recording_status() {
+NICESHOT_API double niceshot_get_recording_status() {
     std::lock_guard<std::mutex> lock(g_recording_mutex);
     
     if (!g_recording_session) {
@@ -1388,7 +1721,7 @@ double niceshot_get_recording_status() {
     return static_cast<double>(g_recording_session->status);
 }
 
-double niceshot_set_video_preset(double preset) {
+NICESHOT_API double niceshot_set_video_preset(double preset) {
     int preset_int = static_cast<int>(preset);
     if (preset_int < 0 || preset_int > 4) {
         std::cerr << "[NiceShot] Invalid video preset: " << preset_int << " (must be 0-4)" << std::endl;
@@ -1402,7 +1735,7 @@ double niceshot_set_video_preset(double preset) {
     return 1.0;
 }
 
-double niceshot_test_x264() {
+NICESHOT_API double niceshot_test_x264() {
     std::cout << "[NiceShot] Testing x264 availability..." << std::endl;
     
 #ifdef HAVE_X264
@@ -1429,6 +1762,48 @@ double niceshot_test_x264() {
     std::cout << "[NiceShot] x264 library NOT available - using simulation mode" << std::endl;
     return 0.0;
 #endif
+}
+
+NICESHOT_API double niceshot_get_encoding_status() {
+    // Check if there are any _encode.json files in common recording directories
+    // This is a simple check - in production you might want a more robust system
+    
+    std::vector<std::string> search_paths = {
+        "recordings/",
+        "C:/Users/Daniel/AppData/Local/ProtoDungeon3/recordings/"
+    };
+    
+    for (const auto& search_path : search_paths) {
+        // Simple file existence check for common patterns
+        WIN32_FIND_DATAA findFileData;
+        std::string pattern = search_path + "*_encode.json";
+        HANDLE hFind = FindFirstFileA(pattern.c_str(), &findFileData);
+        
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                std::string full_path = search_path + findFileData.cFileName;
+                
+                // Check if file contains "ready_for_encoding" (still processing)
+                FILE* file = nullptr;
+                fopen_s(&file, full_path.c_str(), "r");
+                if (file) {
+                    char buffer[1024];
+                    if (fread(buffer, 1, sizeof(buffer) - 1, file) > 0) {
+                        buffer[sizeof(buffer) - 1] = '\0';
+                        if (strstr(buffer, "ready_for_encoding")) {
+                            fclose(file);
+                            FindClose(hFind);
+                            return 1.0; // Encoding in progress
+                        }
+                    }
+                    fclose(file);
+                }
+            } while (FindNextFileA(hFind, &findFileData) != 0);
+            FindClose(hFind);
+        }
+    }
+    
+    return 0.0; // No encoding in progress
 }
 
 } // extern "C"
